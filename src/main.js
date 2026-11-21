@@ -474,8 +474,9 @@ function updateHud() {
     st.textContent = '🛑 Music stopped — grab a chair!'
     if (me?.alive && me.seat < 0) {
       hint.hidden = false
-      const moving = s.round?.motion && s.round.motion !== 'still' ? 'Chairs are on the move! ' : ''
-      hint.textContent = moving + (matchMedia('(pointer: coarse)').matches ? 'Tap a chair to chase it!' : 'WASD / arrows, or click a chair to chase it!')
+      const touch = matchMedia('(pointer: coarse)').matches
+      if (s.round?.motion === 'wild') hint.textContent = touch ? 'Chairs are running wild! Keep tapping to chase one!' : 'Chairs are running wild! Keep clicking / steering to catch one!'
+      else hint.textContent = (s.round?.motion === 'drift' ? 'Chairs are drifting! ' : '') + (touch ? 'Tap a chair to chase it!' : 'WASD / arrows, or click a chair to chase it!')
     }
   } else if (s.phase === 'result') st.textContent = 'Round over'
   else if (s.phase === 'winner') st.textContent = '🏆 We have a champion'
@@ -530,7 +531,9 @@ function aim(e) {
   const p = renderer.toWorld(e.clientX, e.clientY)
   // Snap to a chair if you clicked on (or near) one.
   const chairs = client.chairPoints()
-  // Clicking a chair locks on to it, so you chase it as it moves.
+  // Wild chairs: a click is just a spot to run to — by the time you get there
+  // the chair has moved on, so you have to keep hunting. Calmer modes lock on.
+  if (client.state.round?.motion === 'wild') return client.setTarget(p)
   let best = -1
   let bd = CHAIR_RADIUS * 2
   chairs.forEach((c, i) => {

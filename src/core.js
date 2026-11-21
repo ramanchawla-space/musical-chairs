@@ -178,6 +178,7 @@ export function chairSpin(type) {
 // stop instant, so nothing jumps.
 
 export const MOTIONS = ['still', 'drift', 'wild']
+export const ROAM_SPEED = 112 // average chair speed in Wild mode (players run at MOVE_SPEED)
 export const MOTION_TUNING = {
   still: { rot: 0, amp: 0, freq: 0 },
   drift: { rot: 0.16, amp: 38, freq: 0.9, edge: 40 },
@@ -206,6 +207,97 @@ export function chairMotion(base, i, s, motion = 'still', arena = Infinity) {
   const lim = arena - CHAIR_RADIUS * 1.5
   if (d > lim) { x = (x / d) * lim; y = (y / d) * lim }
   return { x, y, face: base.face + a + 0.4 * Math.sin(f1 * s + p2) }
+}
+
+// --- Wild mode: chairs roam the whole floor -----------------------------------
+// From the moment the music starts, every chair darts between random waypoints
+// anywhere on the floor (pausing, sweeping, doubling back), and never stops —
+// so there's no spot you can pre-aim at. Waypoints come from a per-chair seeded
+// RNG generated strictly in order, so every browser and the host's referee get
+// the identical path no matter when or how often they ask.
+
+const roamCache = new Map()
+
+function roamPath(seed, i, base, arena) {
+  const key = seed + ':' + i + ':' + Math.round(arena)
+  let path = roamCache.get(key)
+  if (!path) {
+    if (roamCache.size > 4000) roamCache.clear()
+    path = { pts: [{ x: base.x, y: base.y, t: 0 }], rand: rng((Math.imul(seed, 31) + Math.imul(i + 1, 7919)) >>> 0) }
+    roamCache.set(key, path)
+  }
+  return path
+}
+
+export function roamPos(seed, i, base, t, arena) {
+  const path = roamPath(seed, i, base, arena)
+  const pts = path.pts
+  const lim = Math.max(40, arena - CHAIR_RADIUS * 2)
+  // Always keep two waypoints beyond t (needed for the spline's tangent).
+  while (pts.length < 3 || pts[pts.length - 2].t <= t) {
+    const last = pts[pts.length - 1]
+    let x
+    let y
+    let d
+    // Next spot: random anywhere on the floor, but a real journey away.
+    do {
+      const r = Math.sqrt(path.rand()) * lim
+      const a = path.rand() * Math.PI * 2
+      x = Math.cos(a) * r
+      y = Math.sin(a) * r
+      d = Math.hypot(x - last.x, y - last.y)
+    } while (d < lim * 0.45)
+    const dur = (d / ROAM_SPEED) * (0.85 + path.rand() * 0.5)
+    pts.push({ x, y, t: last.t + dur })
+  }
+  let lo = 0
+  let hi = pts.length - 1
+  while (hi - lo > 1) {
+    const mid = (lo + hi) >> 1
+    if (pts[mid].t <= t) lo = mid
+    else hi = mid
+  }
+  // Cubic Hermite through the waypoints with time-based tangents: the chair
+  // flows through every point without ever stopping.
+  const p0 = pts[lo]
+  const p1 = pts[lo + 1]
+  const pm = pts[lo - 1] || p0
+  const p2 = pts[lo + 2] || p1
+  const h = p1.t - p0.t
+  const tan = (a, b) => (b.t > a.t ? { x: (b.x - a.x) / (b.t - a.t), y: (b.y - a.y) / (b.t - a.t) } : { x: 0, y: 0 })
+  const m0 = lo === 0 ? tan(p0, p1) : tan(pm, p1)
+  const m1 = tan(p0, p2)
+  const u = Math.min(1, Math.max(0, (t - p0.t) / h))
+  const u2 = u * u
+  const u3 = u2 * u
+  const h00 = 2 * u3 - 3 * u2 + 1
+  const h10 = u3 - 2 * u2 + u
+  const h01 = -2 * u3 + 3 * u2
+  const h11 = u3 - u2
+  let x = h00 * p0.x + h10 * h * m0.x + h01 * p1.x + h11 * h * m1.x
+  let y = h00 * p0.y + h10 * h * m0.y + h01 * p1.y + h11 * h * m1.y
+  const d = Math.hypot(x, y)
+  if (d > lim) { x = (x / d) * lim; y = (y / d) * lim }
+  return { x, y, face: base.face + t * 0.9 + Math.sin(t * 2 + i) * 0.5 }
+}
+
+// Where chair i is at host time hostT, for any motion setting. Used by every
+// client to draw and by the host to referee claims.
+export function chairPosAt(round, i, hostT) {
+  const base = round.chairs[i]
+  const sinceMusic = Math.max(0, (hostT - round.musicAt) / 1000)
+  if (round.motion === 'wild') return roamPos(round.seed, i, base, sinceMusic, round.arena)
+  const stopTau = round.stopAt ? Math.max(0, (round.stopAt - round.musicAt) / 1000) : Infinity
+  const spin = chairSpin(round.layout) * Math.min(sinceMusic, stopTau)
+  const c = Math.cos(spin)
+  const s = Math.sin(spin)
+  const spun = { x: base.x * c - base.y * s, y: base.x * s + base.y * c, face: base.face + spin }
+  if (round.stopAt && hostT > round.stopAt) return chairMotion(spun, i, (hostT - round.stopAt) / 1000, round.motion, round.arena)
+  return spun
+}
+
+export function chairsAtTime(round, hostT) {
+  return round.chairs.map((_, i) => chairPosAt(round, i, hostT))
 }
 
 export function chairsAt(round, tau) {

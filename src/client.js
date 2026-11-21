@@ -4,7 +4,7 @@
 // this player's own movement so steering has zero network latency.
 
 import {
-  chairLayout, layoutRadius, choreography, dancePos, chairsAt, chairMotion, clampToArena,
+  chairLayout, layoutRadius, choreography, dancePos, chairsAtTime, clampToArena,
   ARENA_MARGIN, MOVE_SPEED, SIT_DISTANCE, CHAIR_RADIUS, PLAYER_RADIUS, patternPos,
 } from './core.js'
 import { PING_MS } from './net.js'
@@ -144,12 +144,7 @@ export class GameClient {
   chairPoints(hostT = this.hostNow()) {
     const r = this.round
     if (!r) return []
-    const pts = chairsAt(r, this.danceTau(hostT))
-    if (r.stopAt && r.motion && r.motion !== 'still') {
-      const s = Math.max(0, (hostT - r.stopAt) / 1000)
-      return pts.map((c, i) => chairMotion(c, i, s, r.motion, r.arena))
-    }
-    return pts
+    return chairsAtTime(r, hostT)
   }
 
   // Where I'm running to: a spot, or a (moving) chair I clicked on.

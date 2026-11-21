@@ -162,3 +162,42 @@ test('moving chairs: start exactly where they froze, stay on the floor, and are 
   const c = { x: 100, y: 0, face: 0 }
   assert.deepEqual(chairMotion(c, 0, 5, 'still', 500), c, 'still means still')
 })
+
+test('wild chairs roam the whole floor during AND after the music, never resting, always catchable', async () => {
+  const { chairsAtTime, MOVE_SPEED } = await import('../../src/core.js')
+  for (const [n, seed] of [[3, 11], [6, 202], [12, 3003], [30, 40404]]) {
+    const r = buildRound(seed, 1, Array.from({ length: n }, (_, i) => 'p' + i), 'classic')
+    const round = { ...r, motion: 'wild', musicAt: 10_000, stopAt: 25_000 }
+    const atStart = chairsAtTime(round, 10_000)
+    assert.deepEqual(atStart.map((c) => [c.x, c.y]), r.chairs.map((c) => [c.x, c.y]), 'round opens in its layout shape')
+    // sample every chair across 40s (music + scramble)
+    const seen = r.chairs.map(() => ({ minX: Infinity, maxX: -Infinity, minY: Infinity, maxY: -Infinity }))
+    let fastest = 0
+    let prev = atStart
+    let longestRest = 0
+    const rest = r.chairs.map(() => 0)
+    for (let f = 1; f <= 60 * 40; f++) {
+      const t = 10_000 + (f * 1000) / 60
+      const pts = chairsAtTime(round, t)
+      pts.forEach((p, i) => {
+        const v = Math.hypot(p.x - prev[i].x, p.y - prev[i].y) * 60
+        fastest = Math.max(fastest, v)
+        rest[i] = v < 5 ? rest[i] + 1 / 60 : 0
+        longestRest = Math.max(longestRest, rest[i])
+        assert.ok(Math.hypot(p.x, p.y) <= r.arena, 'chair left the floor')
+        const b = seen[i]
+        b.minX = Math.min(b.minX, p.x); b.maxX = Math.max(b.maxX, p.x)
+        b.minY = Math.min(b.minY, p.y); b.maxY = Math.max(b.maxY, p.y)
+      })
+      prev = pts
+    }
+    assert.ok(fastest < MOVE_SPEED * 0.8, `n=${n}: chairs top out at ${fastest.toFixed(0)} u/s (players ${MOVE_SPEED})`)
+    assert.ok(longestRest < 0.4, `n=${n}: no chair rests longer than ${longestRest.toFixed(2)}s`)
+    for (const b of seen) {
+      assert.ok(b.maxX - b.minX > r.arena * 0.8 && b.maxY - b.minY > r.arena * 0.8, `n=${n}: every chair roams across the floor`)
+    }
+    // the identical path no matter how you query it (cache-independent)
+    const later = chairsAtTime({ ...round, seed: seed }, 33_333)
+    assert.deepEqual(later, chairsAtTime(round, 33_333))
+  }
+})

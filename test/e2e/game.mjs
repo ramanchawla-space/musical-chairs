@@ -115,12 +115,23 @@ try {
         return Math.max(...a.map((p, i) => Math.hypot(p.x - b[i].x, p.y - b[i].y)))
       })
       assert(moved > 40, `chairs move after the music stops (up to ${moved.toFixed(0)} units in 2s)`)
+      const duringMusic = await host.evaluate(() => {
+        const c = window.__mc.client
+        const a = c.chairPoints(c.round.musicAt)
+        const b = c.chairPoints(c.round.musicAt + 2000)
+        return Math.min(...a.map((p, i) => Math.hypot(p.x - b[i].x, p.y - b[i].y)))
+      })
+      assert(duringMusic > 60, `every chair is already roaming while the music plays (each moved ≥ ${duringMusic.toFixed(0)} units in 2s) — no pre-aiming`)
     }
     await sleep(300)
     await shot(host, `r${info.no}-scramble`)
 
     const runners = alive.filter((p) => p !== loser)
     const results = await Promise.all(runners.map((p, i) => scrambleForChair(p, i % 2 ? 'keys' : 'click')))
+    if (info.no === 1) {
+      const lock = await host.evaluate(() => JSON.stringify(window.__mc.client.input.target))
+      assert(!/chair/.test(lock), 'in Wild a click is just a spot to run to (no lock-on chasing)')
+    }
     assert(results.every(Boolean), `${runners.length} players found a chair (mouse + keyboard)`)
 
     await waitPhase(host, 'result', 15000)

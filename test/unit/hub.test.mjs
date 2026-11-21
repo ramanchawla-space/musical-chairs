@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { Hub } from '../../src/hub.js'
-import { chairsAt } from '../../src/core.js'
+import { chairsAt, chairPosAt } from '../../src/core.js'
 
 // Deterministic fake clock + timers so whole games run in milliseconds.
 function fakeClock() {
@@ -49,12 +49,11 @@ function setup(n, opts = {}) {
   const connOf = (cid) => (cid === 'host' ? 'local' : 'c' + cid.slice(1))
   // Seat a list of players onto the free chairs, in order.
   const seat = (cids) => {
-    const chairs = hub.round.frozen
     let i = 0
     for (const cid of cids) {
       while (hub.owners[i]) i++
-      const c = chairs[i]
-      hub.message(connOf(cid), { t: 'sit', chair: i, x: c.x, y: c.y })
+      const c = chairPosAt(hub.round, i, hub.now())
+      hub.message(connOf(cid), { t: 'sit', chair: i, x: c.x, y: c.y, at: hub.now() })
       i++
     }
   }
@@ -103,7 +102,7 @@ test('two players racing for the same chair: first claim wins, second is denied'
   const { hub, cmd, inbox } = env
   cmd('start')
   toScramble(env)
-  const c = hub.round.frozen[0]
+  const c = chairPosAt(hub.round, 0, hub.now())
   hub.message('c1', { t: 'sit', chair: 0, x: c.x, y: c.y })
   hub.message('c2', { t: 'sit', chair: 0, x: c.x, y: c.y })
   assert.equal(hub.owners[0], 'p1')
@@ -116,7 +115,7 @@ test('sitting from across the floor is rejected', () => {
   const { hub, cmd } = env
   cmd('start')
   toScramble(env)
-  const c = hub.round.frozen[0]
+  const c = chairPosAt(hub.round, 0, hub.now())
   hub.message('c1', { t: 'sit', chair: 0, x: c.x + 300, y: c.y })
   assert.equal(hub.owners[0], null)
 })
@@ -126,7 +125,7 @@ test('cannot sit while the music is still playing', () => {
   const { hub, clock, cmd } = env
   cmd('start')
   clock.advance(hub.timing.intro + 1)
-  const c = chairsAt(hub.round, 0)[0]
+  const c = chairPosAt(hub.round, 0, hub.now())
   hub.message('c1', { t: 'sit', chair: 0, x: c.x, y: c.y })
   assert.equal(hub.owners[0], null)
 })
@@ -330,27 +329,30 @@ test('host can switch chairs to random-anywhere, and it applies from the next ro
   assert.equal(hub.settings.layout, 'mix', 'players cannot change it')
 })
 
-test('moving chairs: claims are judged where the chair is at that moment', async () => {
-  const { chairMotion } = await import('../../src/core.js')
+test('moving chairs: claims are judged where the chair is at that moment', () => {
   const env = setup(4)
   const { hub, clock, cmd } = env
   assert.equal(hub.settings.motion, 'wild', 'wild is the default')
   cmd('start')
   toScramble(env)
   const r = hub.round
+  const atStop = chairPosAt(r, 0, r.stopAt)
   clock.advance(2000)
   const now = hub.now()
-  const at = (i) => chairMotion(r.frozen[i], i, (now - r.stopAt) / 1000, 'wild', r.arena)
-  // Sitting where the chair WAS when the music stopped no longer works...
-  hub.message('c1', { t: 'sit', chair: 0, x: r.frozen[0].x, y: r.frozen[0].y, at: now })
+  // Standing where the chair WAS when the music stopped no longer works...
+  hub.message('c1', { t: 'sit', chair: 0, x: atStop.x, y: atStop.y, at: now })
   assert.equal(hub.owners[0], null, 'stale position rejected')
   // ...you have to be where it is now.
-  hub.message('c1', { t: 'sit', chair: 0, x: at(0).x, y: at(0).y, at: now })
+  const c0 = chairPosAt(r, 0, now)
+  hub.message('c1', { t: 'sit', chair: 0, x: c0.x, y: c0.y, at: now })
   assert.equal(hub.owners[0], 'p1')
   // A claim stamped in the future is clamped to now (no predicting the chair).
-  const future = chairMotion(r.frozen[1], 1, (now + 3000 - r.stopAt) / 1000, 'wild', r.arena)
-  hub.message('c2', { t: 'sit', chair: 1, x: future.x, y: future.y, at: now + 3000 })
-  assert.equal(hub.owners[1], null)
+  const future = chairPosAt(r, 1, now + 3000)
+  const c1now = chairPosAt(r, 1, now)
+  if (Math.hypot(future.x - c1now.x, future.y - c1now.y) > 60) {
+    hub.message('c2', { t: 'sit', chair: 1, x: future.x, y: future.y, at: now + 3000 })
+    assert.equal(hub.owners[1], null)
+  }
   cmd('settings', { settings: { motion: 'still' } })
   assert.equal(hub.settings.motion, 'still')
   assert.equal(hub.round.motion, 'wild', 'current round keeps its motion; the change applies next round')

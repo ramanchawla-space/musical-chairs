@@ -28,9 +28,11 @@ joins from their own laptop or phone with a link.
   - Keyboard: `WASD` or arrow keys
   - Mouse: click a chair, or anywhere on the floor
   - Phone: tap or drag towards a chair
-- **The chairs keep moving.** By default (**Wild**) every chair wanders off on its own
-  looping path while the formation keeps turning, so you have to chase one. Click a
-  chair to lock on and your character follows it. Chairs never outrun a player.
+- **The chairs never sit still.** In **Wild** mode (the default) every chair roams the
+  whole floor from the moment the music starts, flowing between random spots and
+  never stopping. There's nowhere to pre-aim. A click only sends you to that spot;
+  the chair will have moved on, so keep hunting and clicking (or steering). Chairs
+  are always a bit slower than players, so they can be caught.
 - Reach a free chair and you sit automatically. The host decides who got there first.
   Nobody can block a free chair by standing next to it.
 - No chair? **BOOTED!** 🥾 You get kicked off the floor and can keep sending reactions.
@@ -41,7 +43,7 @@ joins from their own laptop or phone with a link.
 |---|---|
 | Mode | **Classic**: one fewer chair than players. **Turbo**: about a quarter out each round (40 people finish in ~10 rounds) |
 | Chair layout | **Shapes mix**: rotates through the shapes and random scatter. **Random anywhere**: chairs dropped at random spots every round |
-| Chairs after the music stops | **Still**, **Drift** (slow wander) or **Wild** (chase them!) |
+| Moving chairs | **Still**: chairs spin during the music, then freeze. **Drift**: they wobble after the stop; clicking a chair locks on. **Wild**: they roam everywhere, all the time |
 | Who stops the music | **Random**: a surprise stop after 11–26 s. **Host DJ**: the host presses **STOP** or `Space` |
 
 Other controls: `1`–`6` send reactions (🔥😂💃🎉😱👏) and `M` mutes.

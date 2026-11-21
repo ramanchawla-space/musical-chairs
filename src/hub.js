@@ -7,7 +7,7 @@
 // loopback for the host's own player, and over fakes in unit tests.
 
 import {
-  buildRound, chairsAt, chairMotion, chairCount, SIT_DISTANCE, MOTIONS, PLAYER_COLORS, THEMES, MODES, LAYOUT_MODES,
+  buildRound, chairPosAt, chairCount, SIT_DISTANCE, MOTIONS, PLAYER_COLORS, THEMES, MODES, LAYOUT_MODES,
 } from './core.js'
 
 export const DEFAULT_TIMING = {
@@ -237,9 +237,6 @@ export class Hub {
     const r = this.round
     r.stopAt = this.now()
     r.scrambleEnd = r.stopAt + this.timing.scrambleMax
-    // Everyone starts scrambling from exactly where the dance left them.
-    const tau = (r.stopAt - r.musicAt) / 1000
-    r.frozen = chairsAt(r, tau)
     this.phase = 'scramble'
     this.broadcastState()
     this.startSnaps()
@@ -251,11 +248,10 @@ export class Hub {
     if (this.phase !== 'scramble' || !p.alive || p.seat >= 0) return
     const i = msg.chair | 0
     const r = this.round
-    const base = r.frozen[i]
     // Chairs move: judge the claim at the moment the player says they reached
     // it (clamped to the scramble window, so nobody can claim from the future).
     const at = Math.min(this.now(), Math.max(r.stopAt, Number.isFinite(msg.at) ? msg.at : this.now()))
-    const chair = base && chairMotion(base, i, (at - r.stopAt) / 1000, r.motion, r.arena)
+    const chair = r.chairs[i] && chairPosAt(r, i, at)
     if (!chair || this.owners[i]) {
       this.sendTo(p, { t: 'sitDenied', chair: i })
       return
