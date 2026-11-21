@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no" />
+  <title>Musical Chairs — Rave Edition</title>
+  <meta name="description" content="Multiplayer musical chairs for your team. Rave music, wild dance patterns, one chair too few." />
+  <link rel="icon" href="favicon.svg" type="image/svg+xml" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Bungee&family=Monoton&family=Outfit:wght@400;600;700;800&display=swap" rel="stylesheet" />
+</head>
+<body>
+  <canvas id="stage"></canvas>
+
+  <!-- HOME: profile + host/join -->
+  <section id="home" class="screen">
+    <div class="card home-card">
+      <h1 class="logo"><span>Musical</span><span>Chairs</span></h1>
+      <p class="tagline">RAVE EDITION · one chair too few</p>
+
+      <label class="field">
+        <span>Your nickname</span>
+        <input id="nick" maxlength="18" placeholder="e.g. DJ Disco" autocomplete="off" />
+      </label>
+
+      <div class="field">
+        <span>Pick your picture</span>
+        <div id="avatars" class="avatar-grid"></div>
+        <label class="upload">
+          <input id="photo" type="file" accept="image/*" />
+          <span>📷 Use my own photo</span>
+        </label>
+      </div>
+
+      <div id="join-box" class="actions" hidden>
+        <button id="join-btn" class="btn primary big">Join room <b id="join-code"></b></button>
+        <button id="switch-host" class="link">or host a new game instead</button>
+      </div>
+
+      <div id="host-box" class="actions">
+        <button id="host-btn" class="btn primary big">🎧 Host a game</button>
+        <label class="check"><input id="host-plays" type="checkbox" checked /> I'm playing too</label>
+        <div class="or"><span>or join one</span></div>
+        <div class="code-row">
+          <input id="code" maxlength="5" placeholder="ROOM CODE" autocomplete="off" />
+          <button id="code-btn" class="btn">Join</button>
+        </div>
+      </div>
+      <p id="home-err" class="err" hidden></p>
+
+      <details class="how">
+        <summary>How to play</summary>
+        <ol>
+          <li>The host shares the room link. Everyone picks a name and a picture.</li>
+          <li>When the music plays, everyone dances round the chairs automatically. Watch the pattern!</li>
+          <li>When the music <b>stops</b>, run to a free chair: <kbd>WASD</kbd>/<kbd>arrows</kbd>, or click / tap where you want to go.</li>
+          <li>There's always one chair too few. No chair? <b>Booted.</b> Last one sitting wins.</li>
+        </ol>
+      </details>
+    </div>
+  </section>
+
+  <!-- LOBBY -->
+  <section id="lobby" class="screen side" hidden>
+    <div class="card lobby-card">
+      <div class="room-head">
+        <div>
+          <div class="muted small">ROOM CODE</div>
+          <div id="room-code" class="room-code">-----</div>
+        </div>
+        <div id="qr" class="qr"></div>
+      </div>
+      <div class="share">
+        <input id="share-url" readonly />
+        <button id="copy-btn" class="btn small">Copy link</button>
+      </div>
+
+      <h3><span id="count">0</span> players on the floor</h3>
+      <ul id="roster" class="roster"></ul>
+
+      <div id="host-settings">
+        <h3>Pick the vibe</h3>
+        <div id="themes" class="themes"></div>
+        <h3>Game mode</h3>
+        <div class="seg" id="mode-seg">
+          <button data-v="classic" class="on">Classic<small>one out per round</small></button>
+          <button data-v="turbo">Turbo<small>¼ out per round</small></button>
+        </div>
+        <h3>Who stops the music?</h3>
+        <div class="seg" id="dj-seg">
+          <button data-v="auto" class="on">Random<small>surprise stop</small></button>
+          <button data-v="manual">Host DJ<small>you hit stop</small></button>
+        </div>
+        <button id="start-btn" class="btn primary big">▶ Start the music</button>
+        <p id="lobby-note" class="muted small center"></p>
+      </div>
+      <div id="guest-wait" class="wait" hidden>
+        <div class="eq"><i></i><i></i><i></i><i></i><i></i></div>
+        Waiting for the host to drop the beat…
+      </div>
+    </div>
+  </section>
+
+  <!-- IN-GAME HUD -->
+  <section id="hud" hidden>
+    <div class="topbar">
+      <div class="pill" id="hud-round">Round 1</div>
+      <div class="pill status" id="hud-status">Get ready</div>
+      <div class="pill" id="hud-count">👥 0 · 🪑 0</div>
+      <button class="pill icon" id="mute-btn" title="Mute (M)">🔊</button>
+    </div>
+    <div class="bottombar">
+      <div class="reactions" id="reactions"></div>
+      <div class="host-ctl" id="host-ctl" hidden>
+        <button class="btn danger" id="stop-btn" hidden>⏹ STOP THE MUSIC <kbd>Space</kbd></button>
+        <button class="btn small ghost" id="end-btn">End game</button>
+      </div>
+    </div>
+    <div class="hint" id="hint" hidden></div>
+    <div class="side-roster" id="side-roster"></div>
+  </section>
+
+  <div id="banner" class="banner"></div>
+
+  <div id="overlay" class="overlay" hidden>
+    <div class="card overlay-card" id="overlay-card"></div>
+  </div>
+
+  <div id="toast" class="toast" hidden></div>
+
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>
