@@ -76,6 +76,12 @@
         <button id="copy-btn" class="btn small">Copy link</button>
       </div>
 
+      <div class="preview">
+        <button id="preview-btn" class="btn small">🎧 Play the music</button>
+        <button id="next-track" class="btn small ghost" hidden>⏭ Next track</button>
+        <span id="preview-name" class="muted small"></span>
+      </div>
+
       <h3><span id="count">0</span> players on the floor</h3>
       <ul id="roster" class="roster"></ul>
 
@@ -86,6 +92,17 @@
         <div class="seg" id="mode-seg">
           <button data-v="classic" class="on">Classic<small>one out per round</small></button>
           <button data-v="turbo">Turbo<small>¼ out per round</small></button>
+        </div>
+        <h3>Chair layout</h3>
+        <div class="seg" id="layout-seg">
+          <button data-v="mix" class="on">Shapes mix<small>ring, rows, star… + random</small></button>
+          <button data-v="random">Random anywhere<small>scattered every round</small></button>
+        </div>
+        <h3>Chairs after the music stops</h3>
+        <div class="seg" id="motion-seg">
+          <button data-v="still">Still<small>easy</small></button>
+          <button data-v="drift">Drift<small>slowly wander</small></button>
+          <button data-v="wild" class="on">Wild<small>chase them!</small></button>
         </div>
         <h3>Who stops the music?</h3>
         <div class="seg" id="dj-seg">

@@ -311,3 +311,47 @@ test('a 40-person team in turbo mode finishes in a sensible number of rounds', (
   assert.ok(rounds <= 12, `took ${rounds} rounds`)
   assert.equal(hub.alive().length, 1)
 })
+
+test('host can switch chairs to random-anywhere, and it applies from the next round', () => {
+  const env = setup(6)
+  const { hub, clock, cmd, seat } = env
+  cmd('settings', { settings: { layout: 'random' } })
+  cmd('start')
+  assert.equal(hub.round.layout, 'scatter')
+  toScramble(env)
+  seat(hub.round.order.slice(0, -1))
+  cmd('settings', { settings: { layout: 'mix' } })
+  assert.equal(hub.settings.layout, 'mix')
+  const st = env.last('c1', 'state')
+  assert.equal(st.settings.layout, 'mix')
+  clock.advance(hub.timing.settle + hub.timing.result + 2)
+  assert.equal(hub.phase, 'intro')
+  hub.message('c1', { t: 'cmd', op: 'settings', settings: { layout: 'random' } })
+  assert.equal(hub.settings.layout, 'mix', 'players cannot change it')
+})
+
+test('moving chairs: claims are judged where the chair is at that moment', async () => {
+  const { chairMotion } = await import('../../src/core.js')
+  const env = setup(4)
+  const { hub, clock, cmd } = env
+  assert.equal(hub.settings.motion, 'wild', 'wild is the default')
+  cmd('start')
+  toScramble(env)
+  const r = hub.round
+  clock.advance(2000)
+  const now = hub.now()
+  const at = (i) => chairMotion(r.frozen[i], i, (now - r.stopAt) / 1000, 'wild', r.arena)
+  // Sitting where the chair WAS when the music stopped no longer works...
+  hub.message('c1', { t: 'sit', chair: 0, x: r.frozen[0].x, y: r.frozen[0].y, at: now })
+  assert.equal(hub.owners[0], null, 'stale position rejected')
+  // ...you have to be where it is now.
+  hub.message('c1', { t: 'sit', chair: 0, x: at(0).x, y: at(0).y, at: now })
+  assert.equal(hub.owners[0], 'p1')
+  // A claim stamped in the future is clamped to now (no predicting the chair).
+  const future = chairMotion(r.frozen[1], 1, (now + 3000 - r.stopAt) / 1000, 'wild', r.arena)
+  hub.message('c2', { t: 'sit', chair: 1, x: future.x, y: future.y, at: now + 3000 })
+  assert.equal(hub.owners[1], null)
+  cmd('settings', { settings: { motion: 'still' } })
+  assert.equal(hub.settings.motion, 'still')
+  assert.equal(hub.round.motion, 'wild', 'current round keeps its motion; the change applies next round')
+})

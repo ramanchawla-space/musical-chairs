@@ -51,6 +51,8 @@ try {
   assert(ov2 <= 0, 'lobby fits the phone width')
 
   step('play: phone taps to a chair, host stands still')
+  // The desk host goes fully AFK (no auto-sit even if the dance parks them on the chair).
+  await host.evaluate(() => { window.__mc.client.update = () => {} })
   await host.click('#start-btn')
   await waitPhase(phone, 'music', 10000)
   await sleep(1500)

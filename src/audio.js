@@ -21,7 +21,31 @@ export const TRACKS = [
   { name: 'Cosmic Conga', bpm: 122, root: 50, prog: [[0, 3, 7], [3, 7, 10], [-2, 2, 5], [5, 8, 12]], bass: 'rolling', arp: 'up', lead: 'pluck' },
   { name: 'Sunset Stomp', bpm: 132, root: 55, prog: [[-4, 0, 3], [-2, 2, 5], [0, 3, 7], [0, 3, 7]], bass: 'offbeat', arp: 'updown', lead: 'supersaw' },
   { name: 'Neon Heartbeat', bpm: 128, root: 54, prog: [[0, 3, 7], [-4, 0, 3], [-7, -3, 0], [-2, 2, 5]], bass: 'octave', arp: 'skip', lead: 'square' },
+  // Melodic tracks: hand-written hooks (semitones from root, one per 8th note)
+  // and bouncy house-piano chords instead of a generated lead.
+  {
+    name: 'Friday Feeling', bpm: 124, root: 60, prog: [[0, 4, 7], [-5, -1, 2], [-3, 0, 4], [-7, -3, 0]],
+    bass: 'offbeat', arp: 'up', lead: 'pluck', piano: true,
+    melody: [[4, null, 7, 4, 12, null, 11, 7], [11, null, 7, 11, 14, null, 12, 11], [12, null, 9, 12, 16, null, 14, 12], [9, null, 12, 9, 7, 5, 4, 2]],
+  },
+  {
+    name: 'Golden Hour Anthem', bpm: 126, root: 62, prog: [[-3, 0, 4], [-7, -3, 0], [0, 4, 7], [-5, -1, 2]],
+    bass: 'rolling', arp: 'updown', lead: 'supersaw', piano: true,
+    melody: [[9, 12, 16, 12, 9, null, 7, 9], [7, 11, 14, 11, 7, null, 9, 11], [12, null, 11, 9, 7, null, 4, 7], [9, 11, 13, 14, 16, null, 14, 13]],
+  },
+  {
+    name: 'Euphoria Rally', bpm: 138, root: 57, prog: [[0, 3, 7], [-4, 0, 3], [3, 7, 10], [-2, 2, 5]],
+    bass: 'offbeat', arp: 'skip', lead: 'supersaw',
+    melody: [[12, null, 15, 19, 17, 15, 12, 10], [8, null, 12, 15, 12, 8, 7, 8], [15, null, 19, 22, 19, 15, 14, 15], [14, 17, 19, 17, 14, 12, 10, 7]],
+  },
 ]
+
+// Rounds lean towards the melodic tracks: half of all rounds play one of them.
+export function roundTrack(seed) {
+  const melodic = TRACKS.map((t, i) => (t.melody ? i : -1)).filter((i) => i >= 0)
+  const s = Math.abs(seed | 0)
+  return s % 2 === 0 ? melodic[(s >> 1) % melodic.length] : (s >> 1) % TRACKS.length
+}
 
 // 16-bar arrangement, looped from bar 2. Flags: k kick, h hats, b bass, a arp,
 // p pad, c clap, l lead, r riser, s snare roll.
@@ -33,7 +57,12 @@ const ARRANGEMENT = [
   'khbapcl', 'khbapcl', 'khbapcl', 'khbapcl',
 ]
 
-function makeLead(trackIdx, prog) {
+function makeLead(trackIdx, tr) {
+  if (tr.melody) return tr.melody
+  return generateLead(trackIdx, tr.prog)
+}
+
+function generateLead(trackIdx, prog) {
   // One generated 8th-note melody per chord; same every time for a track.
   const rand = rng(1013 + trackIdx * 7919)
   return prog.map((chord) => {
@@ -131,7 +160,7 @@ export class SoundEngine {
     const t0 = ctx.currentTime + (startWall - Date.now()) / 1000
     let step = 0
     if (t0 < ctx.currentTime) step = Math.ceil((ctx.currentTime - t0) / stepDur)
-    this.playing = { tr, idx, bus, duck, stepDur, t0, step, lead: makeLead(idx, tr.prog), startWall }
+    this.playing = { tr, idx, bus, duck, stepDur, t0, step, lead: makeLead(idx, tr), startWall }
     const tick = () => this.schedule()
     tick()
     this.timer = setInterval(tick, TICK_MS)
@@ -193,6 +222,10 @@ export class SoundEngine {
     }
     if (has('p') && st === 0) {
       for (const n of chord) this.pad(t, midi(root + n), stepDur * 16, s.duck)
+    }
+    // House piano: syncopated chord stabs (the "and" of beats, plus a push).
+    if (tr.piano && has('b') && [2, 6, 10, 13].includes(st)) {
+      for (const n of chord) this.piano(t, midi(root + 12 + n), stepDur * 3, s.bus)
     }
     if (has('l') && st % 2 === 0) {
       const mel = s.lead[bar % s.lead.length]
@@ -396,6 +429,25 @@ export class SoundEngine {
       o.connect(lp)
       o.start(t)
       o.stop(t + dur + 0.05)
+    }
+  }
+
+  piano(t, f, dur, out) {
+    const ctx = this.ctx
+    const g = ctx.createGain()
+    this.env(g, t, 0.003, 0.07, dur + 0.25)
+    g.connect(out)
+    g.connect(this.reverb)
+    // Bright attack (triangle + a touch of the 2nd/3rd harmonic) that decays fast.
+    for (const [mult, type, lvl] of [[1, 'triangle', 1], [2, 'sine', 0.35], [3, 'sine', 0.12]]) {
+      const o = ctx.createOscillator()
+      o.type = type
+      o.frequency.value = f * mult
+      const og = ctx.createGain()
+      og.gain.value = lvl
+      o.connect(og).connect(g)
+      o.start(t)
+      o.stop(t + dur + 0.3)
     }
   }
 

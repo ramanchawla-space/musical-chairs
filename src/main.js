@@ -4,7 +4,7 @@ import { Hub } from './hub.js'
 import { GameClient } from './client.js'
 import { hostRoom, joinRoom, localLink } from './net.js'
 import { Renderer, THEME_INFO } from './render.js'
-import { SoundEngine } from './audio.js'
+import { SoundEngine, TRACKS, roundTrack } from './audio.js'
 import { PRESETS, presetKey, avatarEl, photoToAvatar } from './avatars.js'
 import { CHAIR_RADIUS, LAYOUT_NAMES, PATTERN_NAMES, segmentAt, chairCount } from './core.js'
 import { workerTimers } from './timers.js'
@@ -253,11 +253,12 @@ function renderThemes() {
 }
 renderThemes()
 
-for (const segId of ['mode-seg', 'dj-seg']) {
+const SEGS = { 'mode-seg': 'mode', 'dj-seg': 'dj', 'layout-seg': 'layout', 'motion-seg': 'motion' }
+for (const segId of Object.keys(SEGS)) {
   $(segId).onclick = (e) => {
     const b = e.target.closest('button')
     if (!b) return
-    const key = segId === 'mode-seg' ? 'mode' : 'dj'
+    const key = SEGS[segId]
     client.cmd('settings', { settings: { [key]: b.dataset.v } })
   }
 }
@@ -269,6 +270,27 @@ function toggleMute() {
   audio.setMuted(!audio.muted)
   $('mute-btn').textContent = audio.muted ? '🔇' : '🔊'
 }
+
+// --- Music preview (lobby) ---------------------------------------------------------
+// Lets anyone listen to the soundtrack while waiting. Local to this device.
+
+let previewing = false
+let previewIdx = TRACKS.findIndex((t) => t.melody)
+function renderPreview() {
+  $('preview-btn').textContent = previewing ? '⏹ Stop the music' : '🎧 Play the music'
+  $('next-track').hidden = !previewing
+  $('preview-name').textContent = previewing ? `♪ ${TRACKS[previewIdx].name}` : `${TRACKS.length} tracks in the mix`
+}
+function playPreview() {
+  audio.play(previewIdx, Date.now() + 80)
+  previewing = true
+  renderPreview()
+}
+$('preview-btn').onclick = () => {
+  if (previewing) { audio.stop(false); previewing = false; renderPreview() } else playPreview()
+}
+$('next-track').onclick = () => { previewIdx = (previewIdx + 1) % TRACKS.length; playPreview() }
+renderPreview()
 
 // --- Reactions ---------------------------------------------------------------------------
 
@@ -287,7 +309,7 @@ function onState(s, prev) {
   const phase = s.phase
   const prevPhase = prev?.phase
   if (s.settings.theme !== renderer.theme) { renderer.setTheme(s.settings.theme); renderThemes() }
-  for (const [segId, key] of [['mode-seg', 'mode'], ['dj-seg', 'dj']]) {
+  for (const [segId, key] of Object.entries(SEGS)) {
     $(segId).querySelectorAll('button').forEach((b) => b.classList.toggle('on', b.dataset.v === s.settings[key]))
   }
   if (s.notice && client.isHost) toast(s.notice)
@@ -324,7 +346,8 @@ function onPhase(phase, prevPhase, s) {
   if (phase === 'intro') {
     // Line the countdown up with the host's music-start moment.
     const localMusic = r.musicAt - client.offset
-    audio.play(r.track, localMusic)
+    audio.play(roundTrack(r.track), localMusic)
+    previewing = false
     for (const n of [3, 2, 1]) {
       const at = localMusic - n * 1000 - Date.now()
       if (at > -200) countdownTimers.push(setTimeout(() => { banner(String(n)); audio.sfx('tick') }, Math.max(0, at)))
@@ -332,7 +355,7 @@ function onPhase(phase, prevPhase, s) {
     countdownTimers.push(setTimeout(() => banner('DANCE!'), Math.max(0, localMusic - Date.now())))
     if (r.no === 1) toast(`${r.m} chairs · ${Object.values(s.status).filter((x) => x.alive).length} dancers`)
   } else if (phase === 'music') {
-    if (!audio.playing) audio.play(r.track, r.musicAt - client.offset)
+    if (!audio.playing) audio.play(roundTrack(r.track), r.musicAt - client.offset)
   } else if (phase === 'scramble') {
     audio.stop(true)
     renderer.flash('#ff2f4f', 0.55)
@@ -348,6 +371,8 @@ function onPhase(phase, prevPhase, s) {
     showWinner(s)
   } else if (phase === 'lobby') {
     audio.stop(false)
+    previewing = false
+    renderPreview()
   }
 }
 
@@ -449,7 +474,8 @@ function updateHud() {
     st.textContent = '🛑 Music stopped — grab a chair!'
     if (me?.alive && me.seat < 0) {
       hint.hidden = false
-      hint.textContent = matchMedia('(pointer: coarse)').matches ? 'Tap / drag towards a glowing chair!' : 'WASD / arrows, or click a glowing chair!'
+      const moving = s.round?.motion && s.round.motion !== 'still' ? 'Chairs are on the move! ' : ''
+      hint.textContent = moving + (matchMedia('(pointer: coarse)').matches ? 'Tap a chair to chase it!' : 'WASD / arrows, or click a chair to chase it!')
     }
   } else if (s.phase === 'result') st.textContent = 'Round over'
   else if (s.phase === 'winner') st.textContent = '🏆 We have a champion'
@@ -504,13 +530,14 @@ function aim(e) {
   const p = renderer.toWorld(e.clientX, e.clientY)
   // Snap to a chair if you clicked on (or near) one.
   const chairs = client.chairPoints()
-  let best = null
-  let bd = CHAIR_RADIUS * 1.8
-  chairs.forEach((c) => {
+  // Clicking a chair locks on to it, so you chase it as it moves.
+  let best = -1
+  let bd = CHAIR_RADIUS * 2
+  chairs.forEach((c, i) => {
     const d = Math.hypot(c.x - p.x, c.y - p.y)
-    if (d < bd) { bd = d; best = c }
+    if (d < bd && !client.state.owners[i]) { bd = d; best = i }
   })
-  client.setTarget(best ? { x: best.x, y: best.y } : p)
+  client.setTarget(best >= 0 ? { chair: best } : p)
 }
 $('stage').addEventListener('pointerdown', (e) => { dragging = true; aim(e) })
 window.addEventListener('pointermove', (e) => { if (dragging) aim(e) })

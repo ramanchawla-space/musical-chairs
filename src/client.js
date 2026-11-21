@@ -4,7 +4,7 @@
 // this player's own movement so steering has zero network latency.
 
 import {
-  chairLayout, layoutRadius, choreography, dancePos, chairsAt, clampToArena,
+  chairLayout, layoutRadius, choreography, dancePos, chairsAt, chairMotion, clampToArena,
   ARENA_MARGIN, MOVE_SPEED, SIT_DISTANCE, CHAIR_RADIUS, PLAYER_RADIUS, patternPos,
 } from './core.js'
 import { PING_MS } from './net.js'
@@ -109,7 +109,7 @@ export class GameClient {
     this.state = s
     const r = s.round
     if (r && (!this.round || this.round.seed !== r.seed)) {
-      const chairs = chairLayout(r.layout, r.m)
+      const chairs = chairLayout(r.layout, r.m, r.seed)
       const R = layoutRadius(chairs)
       this.round = { ...r, chairs, R, arena: R + ARENA_MARGIN, segs: choreography(r.seed) }
       this.self = null
@@ -141,10 +141,26 @@ export class GameClient {
     return Math.max(0, (Math.min(hostT, end) - r.musicAt) / 1000)
   }
 
-  chairPoints(hostT) {
+  chairPoints(hostT = this.hostNow()) {
     const r = this.round
     if (!r) return []
-    return chairsAt(r, this.danceTau(hostT))
+    const pts = chairsAt(r, this.danceTau(hostT))
+    if (r.stopAt && r.motion && r.motion !== 'still') {
+      const s = Math.max(0, (hostT - r.stopAt) / 1000)
+      return pts.map((c, i) => chairMotion(c, i, s, r.motion, r.arena))
+    }
+    return pts
+  }
+
+  // Where I'm running to: a spot, or a (moving) chair I clicked on.
+  targetPoint(chairs = this.chairPoints()) {
+    const t = this.input.target
+    if (!t) return null
+    if (t.chair != null) {
+      if (this.state?.owners?.[t.chair]) return null
+      return chairs[t.chair] || null
+    }
+    return t
   }
 
   dancePoint(id, tau) {
@@ -237,7 +253,8 @@ export class GameClient {
     if (this.status().seat >= 0) return
     const me = this.self
     const r = this.round
-    const chairs = this.chairPoints()
+    const hostT = this.hostNow()
+    const chairs = this.chairPoints(hostT)
 
     let dx = 0
     let dy = 0
@@ -249,10 +266,14 @@ export class GameClient {
     if (dx || dy) {
       this.input.target = null
     } else if (this.input.target) {
-      const tx = this.input.target.x - me.x
-      const ty = this.input.target.y - me.y
-      const d = Math.hypot(tx, ty)
-      if (d > 4) { dx = tx / d; dy = ty / d } else this.input.target = null
+      const tp = this.targetPoint(chairs)
+      if (!tp) this.input.target = null
+      else {
+        const tx = tp.x - me.x
+        const ty = tp.y - me.y
+        const d = Math.hypot(tx, ty)
+        if (d > 4) { dx = tx / d; dy = ty / d } else if (this.input.target.chair == null) this.input.target = null
+      }
     }
     const len = Math.hypot(dx, dy) || 1
     const pending = this.pendingSit >= 0 && Date.now() - this.pendingAt < 400
@@ -271,9 +292,14 @@ export class GameClient {
       if (!owners[i] || owners[i] === this.me) return
       this.pushOut(me, c, CHAIR_RADIUS + PLAYER_RADIUS - 6)
     })
-    for (const [id, p] of this.positions()) {
-      if (id === this.me || p.mode !== 'run') continue
-      this.pushOut(me, p, PLAYER_RADIUS * 1.6)
+    // Bodies bump each other, except right next to a free chair: nobody can
+    // block a seat by standing beside it (or by disconnecting there).
+    const nearFree = chairs.some((ch, i) => !owners[i] && Math.hypot(ch.x - me.x, ch.y - me.y) < SIT_DISTANCE + PLAYER_RADIUS * 2.5)
+    if (!nearFree) {
+      for (const [id, p] of this.positions()) {
+        if (id === this.me || p.mode !== 'run') continue
+        this.pushOut(me, p, PLAYER_RADIUS * 1.6)
+      }
     }
     const c = clampToArena(me, r.arena)
     me.x = c.x
@@ -287,20 +313,28 @@ export class GameClient {
         if (Math.hypot(ch.x - me.x, ch.y - me.y) <= SIT_DISTANCE) {
           this.pendingSit = i
           this.pendingAt = Date.now()
-          this.send({ t: 'sit', chair: i, x: me.x, y: me.y })
+          this.send({ t: 'sit', chair: i, x: me.x, y: me.y, at: hostT })
         }
       })
     }
     this.sendPos(false)
   }
 
+  // Push out of an obstacle and slide along it, so running straight into
+  // something steers you around it instead of pinning you in place.
   pushOut(me, o, minD) {
     const dx = me.x - o.x
     const dy = me.y - o.y
     const d = Math.hypot(dx, dy)
     if (d > 0.01 && d < minD) {
-      me.x = o.x + (dx / d) * minD
-      me.y = o.y + (dy / d) * minD
+      const nx = dx / d
+      const ny = dy / d
+      const overlap = minD - d
+      const tx = -ny
+      const ty = nx
+      const side = Math.sign(me.vx * tx + me.vy * ty) || 1
+      me.x = o.x + nx * minD + tx * side * overlap * 0.8
+      me.y = o.y + ny * minD + ty * side * overlap * 0.8
     }
   }
 

@@ -28,14 +28,20 @@ joins from their own laptop or phone with a link.
   - Keyboard: `WASD` or arrow keys
   - Mouse: click a chair, or anywhere on the floor
   - Phone: tap or drag towards a chair
+- **The chairs keep moving.** By default (**Wild**) every chair wanders off on its own
+  looping path while the formation keeps turning, so you have to chase one. Click a
+  chair to lock on and your character follows it. Chairs never outrun a player.
 - Reach a free chair and you sit automatically. The host decides who got there first.
+  Nobody can block a free chair by standing next to it.
 - No chair? **BOOTED!** 🥾 You get kicked off the floor and can keep sending reactions.
-- Each round brings a new chair layout (The Ring, Back to Back, Starburst, Sunflower
-  or Islands) and a new track. Last player sitting is crowned 👑.
+- Each round brings a new chair layout (The Ring, Back to Back, Starburst, Sunflower,
+  Islands, or a **Random Scatter** anywhere on the floor) and a new track. Last player sitting is crowned 👑.
 
 | Setting | Options |
 |---|---|
 | Mode | **Classic**: one fewer chair than players. **Turbo**: about a quarter out each round (40 people finish in ~10 rounds) |
+| Chair layout | **Shapes mix**: rotates through the shapes and random scatter. **Random anywhere**: chairs dropped at random spots every round |
+| Chairs after the music stops | **Still**, **Drift** (slow wander) or **Wild** (chase them!) |
 | Who stops the music | **Random**: a surprise stop after 11–26 s. **Host DJ**: the host presses **STOP** or `Space` |
 
 Other controls: `1`–`6` send reactions (🔥😂💃🎉😱👏) and `M` mutes.
@@ -43,8 +49,11 @@ Other controls: `1`–`6` send reactions (🔥😂💃🎉😱👏) and `M` mute
 ## The music
 
 The tracks are synthesised live in the browser with Web Audio, so there are no files
-to license or download. There are six tracks with their own tempo, key, chord
-progression, bassline and lead (supersaw / square / pluck). Each develops through an
+to license or download. There are nine tracks with their own tempo, key, chord
+progression, bassline and lead (supersaw / square / pluck). Three are melodic:
+*Friday Feeling*, *Golden Hour Anthem* and *Euphoria Rally* have hand-written hooks,
+and the first two add house-piano chords. Half of all rounds play one of these. Use
+**🎧 Play the music** in the lobby to listen while everyone joins. Each develops through an
 arrangement (groove → pads & claps → lead → breakdown with snare roll and riser →
 drop), so a round never sounds like one bar on loop. Every device starts the track
 on the host's clock, so the whole room hears the same beat.

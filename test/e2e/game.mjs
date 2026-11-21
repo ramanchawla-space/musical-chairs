@@ -45,6 +45,17 @@ try {
     await shot(host, `lobby-${theme}`)
   }
 
+  step('lobby music preview')
+  await players[0].click('#preview-btn')
+  await players[0].waitForFunction(() => !!window.__mc.audio.playing)
+  const pv = await players[0].$eval('#preview-name', (e) => e.textContent)
+  assert(/♪/.test(pv), `preview plays "${pv}"`)
+  await players[0].click('#next-track')
+  const pv2 = await players[0].$eval('#preview-name', (e) => e.textContent)
+  assert(pv2 !== pv, `next track: "${pv2}"`)
+  await players[0].click('#preview-btn')
+  assert(!(await players[0].evaluate(() => !!window.__mc.audio.playing)), 'preview stops')
+
   step('clock sync is tight')
   for (const p of players) {
     const off = await p.evaluate(() => window.__mc.client.offset)
@@ -92,6 +103,19 @@ try {
     await Promise.all(alive.map((p) => waitPhase(p, 'scramble', 30000)))
     const stopped = await Promise.all(alive.map((p) => p.evaluate(() => !window.__mc.audio.playing)))
     assert(stopped.every(Boolean), 'music cut on every device when it stopped')
+    if (info.no === 1) {
+      // Wild chairs keep moving after the music stops, identically everywhere.
+      const probeT = await host.evaluate(() => window.__mc.client.round.stopAt + 1500)
+      const views = await Promise.all(alive.map((p) => p.evaluate((t) => JSON.stringify(window.__mc.client.chairPoints(t).map((c) => [Math.round(c.x), Math.round(c.y)])), probeT)))
+      assert(views.every((v) => v === views[0]), 'every screen agrees where the moving chairs are')
+      const moved = await host.evaluate(() => {
+        const c = window.__mc.client
+        const a = c.chairPoints(c.round.stopAt)
+        const b = c.chairPoints(c.round.stopAt + 2000)
+        return Math.max(...a.map((p, i) => Math.hypot(p.x - b[i].x, p.y - b[i].y)))
+      })
+      assert(moved > 40, `chairs move after the music stops (up to ${moved.toFixed(0)} units in 2s)`)
+    }
     await sleep(300)
     await shot(host, `r${info.no}-scramble`)
 

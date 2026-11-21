@@ -99,3 +99,66 @@ test('music duration is random but within bounds', () => {
     assert.ok(t >= 8000 && t <= 17000)
   }
 })
+
+test('random scatter: different every round, identical for everyone, never overlapping', async () => {
+  const { pickLayout } = await import('../../src/core.js')
+  const a = chairLayout('scatter', 12, 111)
+  const b = chairLayout('scatter', 12, 222)
+  assert.deepEqual(chairLayout('scatter', 12, 111), a, 'same seed -> same arrangement on every screen')
+  assert.notDeepEqual(a, b, 'new seed -> new arrangement')
+  for (const seed of [1, 7, 99, 12345, 987654]) {
+    for (const m of [1, 2, 5, 9, 20, 40, 60]) {
+      const ch = chairLayout('scatter', m, seed)
+      assert.equal(ch.length, m)
+      for (let i = 0; i < m; i++) for (let j = i + 1; j < m; j++) {
+        assert.ok(Math.hypot(ch[i].x - ch[j].x, ch[i].y - ch[j].y) >= CHAIR_RADIUS * 2.7 - 1e-9, `seed ${seed} m ${m} overlap`)
+      }
+    }
+  }
+  const rand = rng(5)
+  for (let r = 1; r <= 20; r++) assert.equal(pickLayout(rand, r, 9, 'random'), 'scatter')
+  assert.equal(buildRound(3, 1, ['a', 'b'], 'classic', 'random').layout, 'scatter', 'random mode scatters even a single chair')
+})
+
+test('half the rounds play one of the melodic tracks', async () => {
+  const { roundTrack, TRACKS } = await import('../../src/audio.js')
+  let melodic = 0
+  const used = new Set()
+  for (let s = 0; s < 1000; s++) {
+    const i = roundTrack(s * 7919)
+    assert.ok(i >= 0 && i < TRACKS.length)
+    used.add(i)
+    if (TRACKS[i].melody) melodic++
+  }
+  assert.ok(melodic >= 500, `${melodic}/1000 melodic`)
+  assert.equal(used.size, TRACKS.length, 'every track gets played')
+  for (const t of TRACKS.filter((x) => x.melody)) {
+    assert.equal(t.melody.length, t.prog.length)
+    for (const bar of t.melody) assert.equal(bar.length, 8)
+  }
+})
+
+test('moving chairs: start exactly where they froze, stay on the floor, and are always catchable', async () => {
+  const { chairMotion, MOVE_SPEED } = await import('../../src/core.js')
+  for (const motion of ['drift', 'wild']) {
+    for (const [layout, m] of [['ring', 3], ['scatter', 9], ['sunflower', 20], ['ring', 39], ['scatter', 59]]) {
+      const chairs = chairLayout(layout, m, 42)
+      const arena = layoutRadius(chairs) + ARENA_MARGIN
+      let fastest = 0
+      chairs.forEach((c, i) => {
+        assert.deepEqual(chairMotion(c, i, 0, motion, arena), c, 'no jump at the stop moment')
+        let prev = c
+        for (let f = 1; f <= 60 * 12; f++) {
+          const p = chairMotion(c, i, f / 60, motion, arena)
+          fastest = Math.max(fastest, Math.hypot(p.x - prev.x, p.y - prev.y) * 60)
+          assert.ok(Math.hypot(p.x, p.y) <= arena, 'chair left the floor')
+          prev = p
+        }
+      })
+      assert.ok(fastest < MOVE_SPEED * 0.75, `${motion} ${layout}/${m}: chairs reach ${fastest.toFixed(0)} u/s vs player ${MOVE_SPEED}`)
+      assert.ok(fastest > 30, `${motion} chairs actually move (${fastest.toFixed(0)} u/s)`)
+    }
+  }
+  const c = { x: 100, y: 0, face: 0 }
+  assert.deepEqual(chairMotion(c, 0, 5, 'still', 500), c, 'still means still')
+})

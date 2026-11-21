@@ -580,7 +580,7 @@ export class Renderer {
       g.globalAlpha = 1
     }
     // Where I'm heading (tap/click target)
-    const tgt = client.input?.target
+    const tgt = client.targetPoint?.()
     if (tgt && phase === 'scramble') {
       g.strokeStyle = 'rgba(255,255,255,0.7)'
       g.lineWidth = 2

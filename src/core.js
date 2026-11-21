@@ -56,20 +56,23 @@ export function musicDuration(rand, mode = 'classic') {
 
 // --- Chair layouts --------------------------------------------------------------
 
-export const LAYOUTS = ['ring', 'rows', 'star', 'sunflower', 'clusters']
+export const LAYOUTS = ['ring', 'rows', 'star', 'sunflower', 'clusters', 'scatter']
+export const LAYOUT_MODES = ['mix', 'random']
 export const LAYOUT_NAMES = {
   ring: 'The Ring',
   rows: 'Back to Back',
   star: 'Starburst',
   sunflower: 'Sunflower',
   clusters: 'Islands',
+  scatter: 'Random Scatter',
 }
 
 // Base (un-rotated) chair positions + facing angle for a layout.
-export function chairLayout(type, m) {
+export function chairLayout(type, m, seed = 1) {
   const chairs = []
   if (m <= 0) return chairs
   const spacing = 74
+  if (type === 'scatter') return scatterLayout(m, seed)
   if (type === 'rows') {
     // Classic party layout: two rows back to back, facing outward.
     const perRow = Math.ceil(m / 2)
@@ -130,6 +133,32 @@ export function chairLayout(type, m) {
   return chairs
 }
 
+// Chairs dropped at random spots anywhere on the floor (seeded, so every
+// screen gets the same arrangement). Rejection sampling keeps a walkable gap
+// between chairs; if the floor gets too crowded it grows a little and retries.
+function scatterLayout(m, seed) {
+  const rand = rng((seed ^ 0x5ca77e2) >>> 0)
+  const minGap = CHAIR_RADIUS * 2.7
+  let R = Math.max(150, Math.sqrt(m) * 68)
+  for (;;) {
+    const chairs = []
+    let tries = 0
+    while (chairs.length < m && tries < m * 400) {
+      tries++
+      // sqrt for an even spread over the disc, not bunched in the middle
+      const r = Math.sqrt(rand()) * R
+      const a = rand() * Math.PI * 2
+      const x = Math.cos(a) * r
+      const y = Math.sin(a) * r
+      if (chairs.every((c) => Math.hypot(c.x - x, c.y - y) >= minGap)) {
+        chairs.push({ x, y, face: rand() * Math.PI * 2 })
+      }
+    }
+    if (chairs.length === m) return chairs
+    R *= 1.08
+  }
+}
+
 export function layoutRadius(chairs) {
   let r = 0
   for (const c of chairs) r = Math.max(r, Math.hypot(c.x, c.y))
@@ -139,7 +168,44 @@ export function layoutRadius(chairs) {
 // Chairs slowly rotate while the music plays (some layouts spin the other way)
 // and freeze the instant it stops.
 export function chairSpin(type) {
-  return { ring: 0.16, rows: 0.09, star: -0.2, sunflower: 0.12, clusters: -0.14 }[type] ?? 0.1
+  return { ring: 0.16, rows: 0.09, star: -0.2, sunflower: 0.12, clusters: -0.14, scatter: 0.07 }[type] ?? 0.1
+}
+
+// --- Moving chairs during the scramble ----------------------------------------
+// After the music stops the chairs keep wandering so you have to chase one.
+// Pure function of seconds-since-stop: every screen (and the host's referee)
+// agrees where each chair is at any moment. Motion starts from zero at the
+// stop instant, so nothing jumps.
+
+export const MOTIONS = ['still', 'drift', 'wild']
+export const MOTION_TUNING = {
+  still: { rot: 0, amp: 0, freq: 0 },
+  drift: { rot: 0.16, amp: 38, freq: 0.9, edge: 40 },
+  wild: { rot: 0.3, amp: 52, freq: 1.1, edge: 64 },
+}
+
+export function chairMotion(base, i, s, motion = 'still', arena = Infinity) {
+  const m = MOTION_TUNING[motion] || MOTION_TUNING.still
+  if (!m.amp || s <= 0) return base
+  // formation keeps turning (alternate rounds spin the other way via index parity)
+  // Cap the spin so outer chairs on a huge floor never outrun a player.
+  const R = Number.isFinite(arena) ? Math.max(60, arena - ARENA_MARGIN) : 200
+  const a = Math.min(m.rot, m.edge / R) * s
+  const c = Math.cos(a)
+  const sn = Math.sin(a)
+  let x = base.x * c - base.y * sn
+  let y = base.x * sn + base.y * c
+  // each chair also loops on its own little Lissajous figure
+  const p1 = i * 2.399
+  const p2 = i * 1.731 + 1
+  const f1 = m.freq * (1 + (i % 3) * 0.17)
+  const f2 = m.freq * (1.3 + (i % 4) * 0.11)
+  x += m.amp * (Math.sin(f1 * s + p1) - Math.sin(p1))
+  y += m.amp * (Math.sin(f2 * s + p2) - Math.sin(p2))
+  const d = Math.hypot(x, y)
+  const lim = arena - CHAIR_RADIUS * 1.5
+  if (d > lim) { x = (x / d) * lim; y = (y / d) * lim }
+  return { x, y, face: base.face + a + 0.4 * Math.sin(f1 * s + p2) }
 }
 
 export function chairsAt(round, tau) {
@@ -301,17 +367,23 @@ export function segmentAt(segs, tau) {
 // --- Round construction ------------------------------------------------------
 
 // Everything a client needs to render a round, derived from (seed, alive ids).
-export function buildRound(seed, roundNo, aliveIds, mode) {
+export function pickLayout(rand, roundNo, m, layoutMode = 'mix') {
+  if (layoutMode === 'random') return 'scatter'
+  // Cycle so consecutive rounds look different; tiny games keep a ring.
+  const layout = LAYOUTS[(Math.floor(rand() * LAYOUTS.length) + roundNo) % LAYOUTS.length]
+  return m <= 2 ? 'ring' : layout
+}
+
+export function buildRound(seed, roundNo, aliveIds, mode, layoutMode = 'mix') {
   const rand = rng(seed)
   const m = chairCount(aliveIds.length, mode)
-  // Use a layout that differs from the previous round where possible.
-  const layout = LAYOUTS[(Math.floor(rand() * LAYOUTS.length) + roundNo) % LAYOUTS.length]
-  const chairs = chairLayout(m <= 2 ? 'ring' : layout, m)
+  const layout = pickLayout(rand, roundNo, m, layoutMode)
+  const chairs = chairLayout(layout, m, seed)
   const R = layoutRadius(chairs)
   return {
     no: roundNo,
     seed,
-    layout: m <= 2 ? 'ring' : layout,
+    layout,
     chairs,
     R,
     arena: R + ARENA_MARGIN,

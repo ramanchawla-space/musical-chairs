@@ -7,7 +7,7 @@
 // loopback for the host's own player, and over fakes in unit tests.
 
 import {
-  buildRound, chairsAt, chairCount, SIT_DISTANCE, PLAYER_COLORS, THEMES, MODES,
+  buildRound, chairsAt, chairMotion, chairCount, SIT_DISTANCE, MOTIONS, PLAYER_COLORS, THEMES, MODES, LAYOUT_MODES,
 } from './core.js'
 
 export const DEFAULT_TIMING = {
@@ -34,7 +34,7 @@ export class Hub {
     this.conns = new Map()     // connId -> { send, cid }
     this.players = new Map()   // cid -> player
     this.colorIdx = 0
-    this.settings = { theme: 'neon', mode: 'classic', dj: 'auto' }
+    this.settings = { theme: 'neon', mode: 'classic', dj: 'auto', layout: 'mix', motion: 'wild' }
     this.phase = 'lobby'
     this.round = null
     this.owners = []
@@ -127,6 +127,9 @@ export class Hub {
         if (THEMES.includes(s.theme)) this.settings.theme = s.theme
         if (this.phase === 'lobby' && MODES.includes(s.mode)) this.settings.mode = s.mode
         if (s.dj === 'auto' || s.dj === 'manual') this.settings.dj = s.dj
+        // Takes effect from the next round, so it can change mid-game.
+        if (LAYOUT_MODES.includes(s.layout)) this.settings.layout = s.layout
+        if (MOTIONS.includes(s.motion)) this.settings.motion = s.motion
         this.broadcastState()
         break
       }
@@ -202,7 +205,7 @@ export class Hub {
   startRound(no) {
     const aliveIds = this.alive().map((p) => p.id).sort()
     const seed = Math.floor(this.random() * 2 ** 31)
-    const r = buildRound(seed, no, aliveIds, this.settings.mode)
+    const r = buildRound(seed, no, aliveIds, this.settings.mode, this.settings.layout)
     const t = this.now()
     this.round = {
       ...r,
@@ -212,6 +215,7 @@ export class Hub {
       stopAt: null,
       scrambleEnd: null,
       mode: this.settings.mode,
+      motion: this.settings.motion,
     }
     this.owners = new Array(r.chairs.length).fill(null)
     for (const p of this.alive()) p.seat = -1
@@ -246,7 +250,12 @@ export class Hub {
   onSit(p, msg) {
     if (this.phase !== 'scramble' || !p.alive || p.seat >= 0) return
     const i = msg.chair | 0
-    const chair = this.round.frozen[i]
+    const r = this.round
+    const base = r.frozen[i]
+    // Chairs move: judge the claim at the moment the player says they reached
+    // it (clamped to the scramble window, so nobody can claim from the future).
+    const at = Math.min(this.now(), Math.max(r.stopAt, Number.isFinite(msg.at) ? msg.at : this.now()))
+    const chair = base && chairMotion(base, i, (at - r.stopAt) / 1000, r.motion, r.arena)
     if (!chair || this.owners[i]) {
       this.sendTo(p, { t: 'sitDenied', chair: i })
       return
@@ -373,7 +382,7 @@ export class Hub {
       round: r && {
         no: r.no, seed: r.seed, layout: r.layout, m: r.chairs.length, order: r.order,
         musicAt: r.musicAt, introAt: r.introAt, stopAt: r.stopAt, scrambleEnd: r.scrambleEnd,
-        track: r.track, mode: r.mode,
+        track: r.track, mode: r.mode, motion: r.motion,
       },
       owners: this.owners.slice(),
       status,
