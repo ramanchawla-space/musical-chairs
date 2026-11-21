@@ -18,6 +18,8 @@ try {
   await host.waitForFunction(() => window.__mc.client.roster.size === 3, { timeout: 20000 })
   assert(true, 'both players connected through the cloud broker')
 
+  // P2 goes AFK (no steering, no auto-sit if a racing chair runs over them)
+  await p2.evaluate(() => { window.__mc.client.update = () => {} })
   await host.click('#start-btn')
   // Round 1: host + p1 sit, p2 doesn't. Round 2: host sits.
   await waitPhase(host, 'scramble', 40000)
@@ -25,6 +27,7 @@ try {
   await waitPhase(p2, 'result', 15000)
   const b1 = await p2.evaluate(() => window.__mc.client.state.booted)
   assert(b1[0] === (await p2.evaluate(() => window.__mc.client.me)), 'round 1: P2 booted')
+  await p1.evaluate(() => { window.__mc.client.update = () => {} }) // P1 stands still this time
   await waitPhase(host, 'scramble', 40000)
   await scrambleForChair(host, 'click')
   await waitPhase(p1, 'winner', 20000)

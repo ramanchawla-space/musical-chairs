@@ -357,3 +357,11 @@ test('moving chairs: claims are judged where the chair is at that moment', () =>
   assert.equal(hub.settings.motion, 'still')
   assert.equal(hub.round.motion, 'wild', 'current round keeps its motion; the change applies next round')
 })
+
+test('every round carries the starting crowd size, so all screens agree on the difficulty level', () => {
+  const { hub, last, cmd } = setup(6)
+  cmd('start')
+  assert.equal(hub.round.start, 6)
+  assert.equal(last('c1', 'state').round.start, 6, 'clients get the starting count')
+  assert.equal(hub.round.arena > 0, true)
+})

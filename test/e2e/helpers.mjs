@@ -81,23 +81,43 @@ export async function myStatus(page) {
   })
 }
 
-// Screen coordinates of the nearest free chair to me (or null).
+// Screen coordinates of the best free chair to go for (or null). Chairs can
+// outrun players, so like a good human we aim for the earliest intercept:
+// the spot where a chair will be when we can get there.
 async function nearestChairScreen(page) {
   return page.evaluate(() => {
     const { client, renderer } = window.__mc
     const me = client.self
     if (!me) return null
-    const chairs = client.chairPoints()
+    const now = client.hostNow()
+    const owners = client.state.owners
+    const speed = 300
     let best = null
-    let bd = Infinity
-    chairs.forEach((c, i) => {
-      if (client.state.owners[i]) return
-      const d = Math.hypot(c.x - me.x, c.y - me.y)
-      if (d < bd) { bd = d; best = c }
-    })
+    for (let ms = 0; ms <= 4000 && !best; ms += 50) {
+      const pts = client.chairPoints(now + ms)
+      for (let i = 0; i < pts.length; i++) {
+        if (owners[i]) continue
+        const d = Math.hypot(pts[i].x - me.x, pts[i].y - me.y)
+        if (d <= (speed * ms) / 1000 * 0.85 + 20) { best = pts[i]; break }
+      }
+    }
+    if (!best) {
+      const pts = client.chairPoints(now)
+      let bd = Infinity
+      pts.forEach((c, i) => {
+        if (owners[i]) return
+        const d = Math.hypot(c.x - me.x, c.y - me.y)
+        if (d < bd) { bd = d; best = c }
+      })
+    }
     if (!best) return null
-    const v = renderer.view
-    return { sx: v.x + best.x * v.scale, sy: v.y + best.y * v.scale, dx: best.x - me.x, dy: best.y - me.y }
+    const s = renderer.toScreen(best.x, best.y)
+    // keys steer relative to the (possibly spinning) camera
+    const wx = best.x - me.x
+    const wy = best.y - me.y
+    const c = Math.cos(renderer.yaw)
+    const sn = Math.sin(renderer.yaw)
+    return { sx: s.x, sy: s.y, dx: wx * c - wy * sn, dy: wx * sn + wy * c }
   })
 }
 
@@ -126,7 +146,7 @@ export async function scrambleForChair(page, how = 'click') {
         for (const k of held) if (!want.has(k)) { await page.keyboard.up(k); held.delete(k) }
         for (const k of want) if (!held.has(k)) { await page.keyboard.down(k); held.add(k) }
       }
-      await sleep(how === 'keys' ? 40 : 250)
+      await sleep(how === 'keys' ? 40 : 120)
     }
   } finally {
     for (const k of held) await page.keyboard.up(k)

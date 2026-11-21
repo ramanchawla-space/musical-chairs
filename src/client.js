@@ -5,7 +5,7 @@
 
 import {
   chairLayout, layoutRadius, choreography, dancePos, chairsAtTime, clampToArena,
-  ARENA_MARGIN, MOVE_SPEED, SIT_DISTANCE, CHAIR_RADIUS, PLAYER_RADIUS, patternPos,
+  arenaFor, roundHazards, bouncers, BOUNCER_RADIUS, MOVE_SPEED, SIT_DISTANCE, CHAIR_RADIUS, PLAYER_RADIUS, patternPos,
 } from './core.js'
 import { PING_MS } from './net.js'
 
@@ -111,7 +111,7 @@ export class GameClient {
     if (r && (!this.round || this.round.seed !== r.seed)) {
       const chairs = chairLayout(r.layout, r.m, r.seed)
       const R = layoutRadius(chairs)
-      this.round = { ...r, chairs, R, arena: R + ARENA_MARGIN, segs: choreography(r.seed) }
+      this.round = { ...r, chairs, R, arena: arenaFor(R, r.order.length), segs: choreography(r.seed), hazards: roundHazards(r.seed, r.m, r.no, r.start) }
       this.self = null
       this.snaps.clear()
       this.pendingSit = -1
@@ -259,6 +259,11 @@ export class GameClient {
     if (k.has('ArrowUp') || k.has('w') || k.has('W')) dy -= 1
     if (k.has('ArrowDown') || k.has('s') || k.has('S')) dy += 1
     if (dx || dy) {
+      // keys are screen-relative, even while the floor spins
+      const yaw = this.viewYaw || 0
+      const c = Math.cos(-yaw)
+      const sn = Math.sin(-yaw)
+      ;[dx, dy] = [dx * c - dy * sn, dx * sn + dy * c]
       this.input.target = null
     } else if (this.input.target) {
       const tp = this.targetPoint(chairs)
@@ -295,6 +300,9 @@ export class GameClient {
         if (id === this.me || p.mode !== 'run') continue
         this.pushOut(me, p, PLAYER_RADIUS * 1.6)
       }
+    }
+    if (r.hazards?.includes('bouncers')) {
+      for (const b of bouncers(r, hostT)) this.pushOut(me, b, BOUNCER_RADIUS + PLAYER_RADIUS)
     }
     const c = clampToArena(me, r.arena)
     me.x = c.x

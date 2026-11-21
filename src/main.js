@@ -6,7 +6,7 @@ import { hostRoom, joinRoom, localLink } from './net.js'
 import { Renderer, THEME_INFO } from './render.js'
 import { SoundEngine, TRACKS, roundTrack } from './audio.js'
 import { PRESETS, presetKey, avatarEl, photoToAvatar } from './avatars.js'
-import { CHAIR_RADIUS, LAYOUT_NAMES, PATTERN_NAMES, segmentAt, chairCount } from './core.js'
+import { CHAIR_RADIUS, LAYOUT_NAMES, PATTERN_NAMES, HAZARD_NAMES, segmentAt, chairCount, difficulty } from './core.js'
 import { workerTimers } from './timers.js'
 
 const $ = (id) => document.getElementById(id)
@@ -456,7 +456,9 @@ function updateHud() {
   if (!s || s.phase === 'lobby') return
   const r = s.round
   const alive = Object.values(s.status).filter((x) => x.alive).length
-  $('hud-round').textContent = r ? `Round ${r.no} · ${LAYOUT_NAMES[r.layout] || ''}` : ''
+  const lvl = r ? 1 + Math.round(difficulty(r.m, r.start) * 9) : 1
+  $('hud-round').textContent = r ? `Round ${r.no} · ${LAYOUT_NAMES[r.layout] || ''} · 🔥 Lv ${lvl}` : ''
+  const hz = (client.round?.hazards || []).map((h) => HAZARD_NAMES[h]).join(' · ')
   const free = s.owners.filter((o) => !o).length
   $('hud-count').textContent = `👥 ${alive} · 🪑 ${s.phase === 'scramble' ? `${free} free` : r?.m ?? 0}`
   const st = $('hud-status')
@@ -469,6 +471,10 @@ function updateHud() {
     st.classList.add('dance')
     const seg = client.round && segmentAt(client.round.segs, client.danceTau())
     st.textContent = `🎵 ${audio.trackName() || 'Dance!'}${seg ? ' · ' + PATTERN_NAMES[seg.p] : ''}`
+    if (hz && me?.alive) {
+      hint.hidden = false
+      hint.textContent = `⚠️ Incoming: ${hz}`
+    }
   } else if (s.phase === 'scramble') {
     st.classList.add('stop')
     st.textContent = '🛑 Music stopped — grab a chair!'
@@ -477,6 +483,7 @@ function updateHud() {
       const touch = matchMedia('(pointer: coarse)').matches
       if (s.round?.motion === 'wild') hint.textContent = touch ? 'Chairs are running wild! Keep tapping to chase one!' : 'Chairs are running wild! Keep clicking / steering to catch one!'
       else hint.textContent = (s.round?.motion === 'drift' ? 'Chairs are drifting! ' : '') + (touch ? 'Tap a chair to chase it!' : 'WASD / arrows, or click a chair to chase it!')
+      if (hz) hint.textContent += ` ⚠️ ${hz}`
     }
   } else if (s.phase === 'result') st.textContent = 'Round over'
   else if (s.phase === 'winner') st.textContent = '🏆 We have a champion'
@@ -549,11 +556,18 @@ window.addEventListener('pointerup', () => { dragging = false })
 // --- Frame loop -------------------------------------------------------------------------
 
 let last = performance.now()
+let prevFrame = last
 let hudTick = 0
 function frame(now) {
   const dt = Math.min(0.05, (now - last) / 1000)
   last = now
-  if (client) client.update(dt)
+  if (client) {
+    // Move in real time even if frames are slow: substep instead of capping.
+    client.viewYaw = renderer.yaw
+    let rem = Math.min(0.25, (now - prevFrame) / 1000)
+    while (rem > 1e-4) { const step = Math.min(0.05, rem); client.update(step); rem -= step }
+  }
+  prevFrame = now
   renderer.padRight = client?.state?.phase === 'lobby' && innerWidth > 820 ? 400 : 0
   renderer.draw(client, { dt, pulse: audio.pulse(Date.now()), phaseAge: (now - phaseStart) / 1000 })
   if ((hudTick += dt) > 0.25) { hudTick = 0; if (client?.state?.phase === 'music') updateHud() }

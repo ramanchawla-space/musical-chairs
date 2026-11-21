@@ -63,9 +63,12 @@ try {
   await shot(host, 'bigscreen-music')
 
   step('final round: P1 sits, P2 stands still')
+  // AFK: no steering, and no auto-sit if a racing chair runs over P2
+  await p2.evaluate(() => { const c = window.__mc.client; c._update = c.update; c.update = () => {} })
   await waitPhase(p1, 'scramble', 30000)
   await scrambleForChair(p1, 'click')
   await waitPhase(host, 'winner', 20000)
+  await p2.evaluate(() => { const c = window.__mc.client; c.update = c._update })
   const champ = await host.evaluate(() => window.__mc.client.state.champion)
   assert(champ === (await p1.evaluate(() => window.__mc.client.me)), 'P1 is champion')
 

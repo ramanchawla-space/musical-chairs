@@ -117,9 +117,15 @@ try {
       assert(moved > 40, `chairs move after the music stops (up to ${moved.toFixed(0)} units in 2s)`)
       const duringMusic = await host.evaluate(() => {
         const c = window.__mc.client
-        const a = c.chairPoints(c.round.musicAt)
-        const b = c.chairPoints(c.round.musicAt + 2000)
-        return Math.min(...a.map((p, i) => Math.hypot(p.x - b[i].x, p.y - b[i].y)))
+        // distance travelled along the path (a fast chair can dart out and back)
+        const travelled = c.round.chairs.map(() => 0)
+        let prev = c.chairPoints(c.round.musicAt)
+        for (let ms = 50; ms <= 2000; ms += 50) {
+          const cur = c.chairPoints(c.round.musicAt + ms)
+          cur.forEach((p, i) => { travelled[i] += Math.hypot(p.x - prev[i].x, p.y - prev[i].y) })
+          prev = cur
+        }
+        return Math.min(...travelled)
       })
       assert(duringMusic > 60, `every chair is already roaming while the music plays (each moved ≥ ${duringMusic.toFixed(0)} units in 2s) — no pre-aiming`)
     }

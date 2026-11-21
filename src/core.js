@@ -9,8 +9,8 @@
 export const CHAIR_RADIUS = 26        // world units — a chair's sit zone
 export const PLAYER_RADIUS = 20
 export const SIT_DISTANCE = 30        // centre-to-centre distance that triggers a sit
-export const MOVE_SPEED = 250         // world units / second while scrambling
-export const ARENA_MARGIN = 230       // free floor beyond the outermost chair
+export const MOVE_SPEED = 300         // world units / second while scrambling
+export const ARENA_MARGIN = 360       // free floor beyond the outermost chair
 
 export const THEMES = ['neon', 'cosmic', 'sunset']
 export const MODES = ['classic', 'turbo']
@@ -71,7 +71,7 @@ export const LAYOUT_NAMES = {
 export function chairLayout(type, m, seed = 1) {
   const chairs = []
   if (m <= 0) return chairs
-  const spacing = 74
+  const spacing = 96
   if (type === 'scatter') return scatterLayout(m, seed)
   if (type === 'rows') {
     // Classic party layout: two rows back to back, facing outward.
@@ -90,7 +90,7 @@ export function chairLayout(type, m, seed = 1) {
     // Phyllotaxis (golden-angle spiral) — looks like a sunflower head.
     const golden = Math.PI * (3 - Math.sqrt(5))
     for (let i = 0; i < m; i++) {
-      const r = 46 * Math.sqrt(i + 0.6)
+      const r = 60 * Math.sqrt(i + 0.6)
       const a = i * golden
       chairs.push({ x: Math.cos(a) * r, y: Math.sin(a) * r, face: a })
     }
@@ -109,7 +109,7 @@ export function chairLayout(type, m, seed = 1) {
   if (type === 'clusters') {
     // Little islands of up to 3 chairs spread around a circle.
     const groups = Math.max(1, Math.ceil(m / 3))
-    const R = groups === 1 ? 0 : Math.max(130, (groups * 190) / (2 * Math.PI))
+    const R = groups === 1 ? 0 : Math.max(150, (groups * 240) / (2 * Math.PI))
     let i = 0
     for (let g = 0; g < groups; g++) {
       const ga = (g / groups) * Math.PI * 2 - Math.PI / 2
@@ -139,7 +139,7 @@ export function chairLayout(type, m, seed = 1) {
 function scatterLayout(m, seed) {
   const rand = rng((seed ^ 0x5ca77e2) >>> 0)
   const minGap = CHAIR_RADIUS * 2.7
-  let R = Math.max(150, Math.sqrt(m) * 68)
+  let R = Math.max(180, Math.sqrt(m) * 92)
   for (;;) {
     const chairs = []
     let tries = 0
@@ -157,6 +157,43 @@ function scatterLayout(m, seed) {
     if (chairs.length === m) return chairs
     R *= 1.08
   }
+}
+
+// The floor grows with the crowd so 20+ dancers never feel crammed.
+export const ARENA_PER_PLAYER = 22
+export function arenaFor(R, players) {
+  return R + ARENA_MARGIN + ARENA_PER_PLAYER * Math.max(0, players)
+}
+
+// --- Difficulty ----------------------------------------------------------------
+// 0 in the opening round, rising to 1 for the final showdown as players get
+// booted: faster chairs, longer blink-outs, more hazards at once. `start` is
+// how many players began the game (falls back to an absolute scale).
+export function difficulty(m, start) {
+  const clamp = (v) => Math.min(1, Math.max(0, v))
+  if (start === 2) return 1
+  if (start > 2) return clamp((start - 1 - m) / Math.max(1, start - 2))
+  return clamp((10 - m) / 9)
+}
+
+export function roundLevel(round) {
+  return difficulty(round.chairs ? round.chairs.length : round.m, round.start)
+}
+
+export const HAZARDS = ['fog', 'birds', 'blackout', 'mirage', 'balls', 'bouncers', 'balloons', 'lasers', 'smoke', 'darkness', 'spin', 'confetti']
+export const HAZARD_NAMES = {
+  fog: 'Fog', birds: 'Birds', blackout: 'Blackouts', mirage: 'Mirage chairs', balls: 'Giant disco balls',
+  bouncers: 'Bouncers', balloons: 'Balloons', lasers: 'Laser walls', smoke: 'Smoke cannons',
+  darkness: 'Lights out', spin: 'Spinning floor', confetti: 'Confetti storm',
+}
+
+// Which hazards hit this round: a random mix, more of them as it gets harder.
+// Seeded, so every screen (and the host) agrees.
+export function roundHazards(seed, m, roundNo = 1, start) {
+  const lv = difficulty(m, start)
+  const rand = rng((seed ^ 0x4a2a4a2a) >>> 0)
+  const n = Math.min(HAZARDS.length, 3 + Math.round(lv * 7) + (roundNo > 3 ? 1 : 0))
+  return shuffle(HAZARDS, rand).slice(0, n)
 }
 
 export function layoutRadius(chairs) {
@@ -178,7 +215,10 @@ export function chairSpin(type) {
 // stop instant, so nothing jumps.
 
 export const MOTIONS = ['still', 'drift', 'wild']
-export const ROAM_SPEED = 112 // average chair speed in Wild mode (players run at MOVE_SPEED)
+export const ROAM_SPEED = 265 // average chair cruise speed in Wild mode (players run at MOVE_SPEED)
+export const SCRAMBLE_BOOST = 0.4 // wild chairs speed UP (never down) when the music stops
+const JITTER_AMP = 10 // sideways zig-zag on top of the roaming path
+const JITTER_FREQ = 1.4
 export const MOTION_TUNING = {
   still: { rot: 0, amp: 0, freq: 0 },
   drift: { rot: 0.16, amp: 38, freq: 0.9, edge: 40 },
@@ -218,8 +258,8 @@ export function chairMotion(base, i, s, motion = 'still', arena = Infinity) {
 
 const roamCache = new Map()
 
-function roamPath(seed, i, base, arena) {
-  const key = seed + ':' + i + ':' + Math.round(arena)
+function roamPath(seed, i, base, arena, speed) {
+  const key = seed + ':' + i + ':' + Math.round(arena) + ':' + Math.round(speed)
   let path = roamCache.get(key)
   if (!path) {
     if (roamCache.size > 4000) roamCache.clear()
@@ -229,8 +269,8 @@ function roamPath(seed, i, base, arena) {
   return path
 }
 
-export function roamPos(seed, i, base, t, arena) {
-  const path = roamPath(seed, i, base, arena)
+export function roamPos(seed, i, base, t, arena, speed = ROAM_SPEED, jitter = 1) {
+  const path = roamPath(seed, i, base, arena, speed)
   const pts = path.pts
   const lim = Math.max(40, arena - CHAIR_RADIUS * 2)
   // Always keep two waypoints beyond t (needed for the spline's tangent).
@@ -239,15 +279,19 @@ export function roamPos(seed, i, base, t, arena) {
     let x
     let y
     let d
-    // Next spot: random anywhere on the floor, but a real journey away.
+    // Next spot: random anywhere on the floor. Mostly long dashes, with
+    // sudden short darts thrown in so a chair can jink sideways or double back.
+    const dart = path.rand() < 0.35
+    // Half the trips head for the far edges of the floor.
+    const edge = !dart && path.rand() < 0.5
     do {
-      const r = Math.sqrt(path.rand()) * lim
+      const r = edge ? lim * (0.82 + 0.18 * path.rand()) : Math.sqrt(path.rand()) * lim
       const a = path.rand() * Math.PI * 2
       x = Math.cos(a) * r
       y = Math.sin(a) * r
       d = Math.hypot(x - last.x, y - last.y)
-    } while (d < lim * 0.45)
-    const dur = (d / ROAM_SPEED) * (0.85 + path.rand() * 0.5)
+    } while (dart ? d < lim * 0.22 || d > lim * 0.6 : d < lim * 0.5)
+    const dur = (d / speed) * (0.9 + path.rand() * 0.4)
     pts.push({ x, y, t: last.t + dur })
   }
   let lo = 0
@@ -264,7 +308,14 @@ export function roamPos(seed, i, base, t, arena) {
   const pm = pts[lo - 1] || p0
   const p2 = pts[lo + 2] || p1
   const h = p1.t - p0.t
-  const tan = (a, b) => (b.t > a.t ? { x: (b.x - a.x) / (b.t - a.t), y: (b.y - a.y) / (b.t - a.t) } : { x: 0, y: 0 })
+  const tan = (a, b) => {
+    if (b.t <= a.t) return { x: 0, y: 0 }
+    const vx = (b.x - a.x) / (b.t - a.t)
+    const vy = (b.y - a.y) / (b.t - a.t)
+    // cap the tangent so the spline never whips through a waypoint
+    const k = Math.min(1, (speed * 1.1) / (Math.hypot(vx, vy) || 1))
+    return { x: vx * k, y: vy * k }
+  }
   const m0 = lo === 0 ? tan(p0, p1) : tan(pm, p1)
   const m1 = tan(p0, p2)
   const u = Math.min(1, Math.max(0, (t - p0.t) / h))
@@ -276,9 +327,27 @@ export function roamPos(seed, i, base, t, arena) {
   const h11 = u3 - u2
   let x = h00 * p0.x + h10 * h * m0.x + h01 * p1.x + h11 * h * m1.x
   let y = h00 * p0.y + h10 * h * m0.y + h01 * p1.y + h11 * h * m1.y
+  // Twitchy zig-zag on top (starts at zero so the round opens in its shape).
+  const jf = JITTER_FREQ * (1 + (i % 5) * 0.09)
+  x += jitter * JITTER_AMP * (Math.sin(jf * t * 6.283 + i) - Math.sin(i))
+  y += jitter * JITTER_AMP * (Math.cos(jf * 1.37 * t * 6.283 + i * 2) - Math.cos(i * 2))
   const d = Math.hypot(x, y)
   if (d > lim) { x = (x / d) * lim; y = (y / d) * lim }
   return { x, y, face: base.face + t * 0.9 + Math.sin(t * 2 + i) * 0.5 }
+}
+
+// Wild chairs blink out of sight now and then (purely visual, but the same
+// on every screen). Returns 0 (invisible) .. 1 (fully visible).
+export function chairVisibility(seed, i, t, lv = 0) {
+  const period = (2.6 + ((Math.imul(seed ^ (i * 2654435761), 1597334677) >>> 0) % 1000) / 1000 * 1.6) * (1 - 0.25 * lv)
+  const cyc = Math.floor(t / period)
+  const h = (Math.imul((seed + cyc * 7919) ^ (i * 40503), 2246822519) >>> 0) / 4294967296
+  const start = 0.15 + h * 0.55 // when, within this cycle, it vanishes
+  const off = (0.55 + h * 0.35) * (1 + 0.6 * lv) // and for how long (s)
+  const u = t - cyc * period - start * period
+  if (u < 0 || u > off) return 1
+  const edge = 0.12
+  return u < edge ? 1 - u / edge : u > off - edge ? (u - (off - edge)) / edge : 0
 }
 
 // Where chair i is at host time hostT, for any motion setting. Used by every
@@ -286,7 +355,14 @@ export function roamPos(seed, i, base, t, arena) {
 export function chairPosAt(round, i, hostT) {
   const base = round.chairs[i]
   const sinceMusic = Math.max(0, (hostT - round.musicAt) / 1000)
-  if (round.motion === 'wild') return roamPos(round.seed, i, base, sinceMusic, round.arena)
+  if (round.motion === 'wild') {
+    // Path time runs faster once the music stops: same path, no jump, more speed.
+    const sinceStop = round.stopAt ? Math.max(0, (hostT - round.stopAt) / 1000) : 0
+    const lv = roundLevel(round)
+    const speed = ROAM_SPEED * (1 + 0.25 * lv)
+    const boost = SCRAMBLE_BOOST + 0.15 * lv
+    return roamPos(round.seed, i, base, sinceMusic + boost * sinceStop, round.arena, speed, 1 + 0.4 * lv)
+  }
   const stopTau = round.stopAt ? Math.max(0, (round.stopAt - round.musicAt) / 1000) : Infinity
   const spin = chairSpin(round.layout) * Math.min(sinceMusic, stopTau)
   const c = Math.cos(spin)
@@ -294,6 +370,21 @@ export function chairPosAt(round, i, hostT) {
   const spun = { x: base.x * c - base.y * s, y: base.x * s + base.y * c, face: base.face + spin }
   if (round.stopAt && hostT > round.stopAt) return chairMotion(spun, i, (hostT - round.stopAt) / 1000, round.motion, round.arena)
   return spun
+}
+
+// Bouncers: big lads who wander the floor and physically block you.
+export const BOUNCER_RADIUS = 34
+export function bouncers(round, hostT) {
+  const n = 2 + Math.round(roundLevel(round) * 3) + Math.floor(round.order?.length / 8 || 0)
+  const seed = (round.seed ^ 0xb0b) >>> 0
+  const since = Math.max(0, (hostT - round.musicAt) / 1000)
+  const out = []
+  for (let i = 0; i < n; i++) {
+    const a = (i / n) * Math.PI * 2 + 0.4
+    const base = { x: Math.cos(a) * round.arena * 0.5, y: Math.sin(a) * round.arena * 0.5, face: 0 }
+    out.push(roamPos(seed, i, base, since, round.arena, 120, 0))
+  }
+  return out
 }
 
 export function chairsAtTime(round, hostT) {
@@ -466,7 +557,7 @@ export function pickLayout(rand, roundNo, m, layoutMode = 'mix') {
   return m <= 2 ? 'ring' : layout
 }
 
-export function buildRound(seed, roundNo, aliveIds, mode, layoutMode = 'mix') {
+export function buildRound(seed, roundNo, aliveIds, mode, layoutMode = 'mix', start) {
   const rand = rng(seed)
   const m = chairCount(aliveIds.length, mode)
   const layout = pickLayout(rand, roundNo, m, layoutMode)
@@ -478,7 +569,8 @@ export function buildRound(seed, roundNo, aliveIds, mode, layoutMode = 'mix') {
     layout,
     chairs,
     R,
-    arena: R + ARENA_MARGIN,
+    arena: arenaFor(R, aliveIds.length),
+    start,
     order: shuffle(aliveIds, rand),
     segs: choreography(seed),
     musicMs: musicDuration(rand, mode),

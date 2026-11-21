@@ -175,6 +175,7 @@ export class Hub {
     this.champion = null
     this.booted = []
     this.broadcastRoster()
+    this.startCount = this.alive().length // difficulty ramps from here to the final
     this.startRound(1)
     return true
   }
@@ -205,7 +206,7 @@ export class Hub {
   startRound(no) {
     const aliveIds = this.alive().map((p) => p.id).sort()
     const seed = Math.floor(this.random() * 2 ** 31)
-    const r = buildRound(seed, no, aliveIds, this.settings.mode, this.settings.layout)
+    const r = buildRound(seed, no, aliveIds, this.settings.mode, this.settings.layout, this.startCount)
     const t = this.now()
     this.round = {
       ...r,
@@ -259,7 +260,7 @@ export class Hub {
     // Loose anti-teleport check; positions are client-reported.
     const x = Number.isFinite(msg.x) ? msg.x : p.x
     const y = Number.isFinite(msg.y) ? msg.y : p.y
-    if (Math.hypot(chair.x - x, chair.y - y) > SIT_DISTANCE + 20) {
+    if (Math.hypot(chair.x - x, chair.y - y) > SIT_DISTANCE + 40) {
       this.sendTo(p, { t: 'sitDenied', chair: i })
       return
     }
@@ -378,7 +379,7 @@ export class Hub {
       round: r && {
         no: r.no, seed: r.seed, layout: r.layout, m: r.chairs.length, order: r.order,
         musicAt: r.musicAt, introAt: r.introAt, stopAt: r.stopAt, scrambleEnd: r.scrambleEnd,
-        track: r.track, mode: r.mode, motion: r.motion,
+        track: r.track, mode: r.mode, motion: r.motion, start: r.start,
       },
       owners: this.owners.slice(),
       status,

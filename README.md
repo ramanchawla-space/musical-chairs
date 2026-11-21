@@ -29,10 +29,22 @@ joins from their own laptop or phone with a link.
   - Mouse: click a chair, or anywhere on the floor
   - Phone: tap or drag towards a chair
 - **The chairs never sit still.** In **Wild** mode (the default) every chair roams the
-  whole floor from the moment the music starts, flowing between random spots and
-  never stopping. There's nowhere to pre-aim. A click only sends you to that spot;
-  the chair will have moved on, so keep hunting and clicking (or steering). Chairs
-  are always a bit slower than players, so they can be caught.
+  whole floor from the moment the music starts. Chairs dash to the far edges, jink
+  sideways and double back, and they **speed up** when the music stops (they never slow
+  down). In the scramble they average a little faster than a running player, so you
+  have to cut them off, not chase them. A click only sends you to that spot, so keep
+  hunting and clicking (or steering).
+- **Hazards.** Every round draws a random mix from a pool of twelve, and the HUD
+  warns you what's coming: **Fog** banks, low-flying **Birds**, split-second
+  **Blackouts**, **Mirage chairs** (they look free but aren't real), **Giant disco
+  balls** bouncing across the floor, **Bouncers** who wander about and physically block
+  you, rising **Balloons**, sweeping **Laser walls**, **Smoke cannons**, **Lights out**
+  (only roaming spotlights see anything), a **Spinning floor** (keys stay
+  screen-relative) and a **Confetti storm**. Free chairs also blink invisible now and then.
+- **It gets harder and harder.** The 🔥 level (1–10) climbs as players are booted, from
+  round one up to the final showdown. Higher levels bring faster chairs, longer
+  blink-outs, more bouncers, mirages and birds, and more hazards at once (up to ten).
+- **The floor grows with the crowd**, so 20+ players have room to dance.
 - Reach a free chair and you sit automatically. The host decides who got there first.
   Nobody can block a free chair by standing next to it.
 - No chair? **BOOTED!** 🥾 You get kicked off the floor and can keep sending reactions.
@@ -43,22 +55,31 @@ joins from their own laptop or phone with a link.
 |---|---|
 | Mode | **Classic**: one fewer chair than players. **Turbo**: about a quarter out each round (40 people finish in ~10 rounds) |
 | Chair layout | **Shapes mix**: rotates through the shapes and random scatter. **Random anywhere**: chairs dropped at random spots every round |
-| Moving chairs | **Still**: chairs spin during the music, then freeze. **Drift**: they wobble after the stop; clicking a chair locks on. **Wild**: they roam everywhere, all the time |
+| Moving chairs | **Still**: chairs spin during the music, then freeze. **Drift**: they wobble after the stop; clicking a chair locks on. **Wild**: they race everywhere, all the time, and blink invisible |
 | Who stops the music | **Random**: a surprise stop after 11–26 s. **Host DJ**: the host presses **STOP** or `Space` |
 
 Other controls: `1`–`6` send reactions (🔥😂💃🎉😱👏) and `M` mutes.
 
+## The look
+
+The floor is a raised 3D stage seen in perspective. It has an LED-lit side wall,
+light-up tiles that shrink into the distance, light shafts and sweeping spotlights,
+speaker stacks pumping to the kick, and a mirror ball throwing light specks. The
+chairs are solid, with legs, a padded seat and a backrest. The floor slowly turns
+while the music plays and bobs to the beat. Everything is depth-sorted, so near
+players, bouncers and disco balls pass in front of far chairs.
+
 ## The music
 
-The tracks are synthesised live in the browser with Web Audio, so there are no files
-to license or download. There are nine tracks with their own tempo, key, chord
-progression, bassline and lead (supersaw / square / pluck). Three are melodic:
-*Friday Feeling*, *Golden Hour Anthem* and *Euphoria Rally* have hand-written hooks,
-and the first two add house-piano chords. Half of all rounds play one of these. Use
-**🎧 Play the music** in the lobby to listen while everyone joins. Each develops through an
-arrangement (groove → pads & claps → lead → breakdown with snare roll and riser →
-drop), so a round never sounds like one bar on loop. Every device starts the track
-on the host's clock, so the whole room hears the same beat.
+The tracks are real rave styles synthesised live in the browser with Web Audio, so there
+are no files to license or download. Nine tracks between 132 and 150 BPM use the classic
+rave toolkit: distorted kicks, chopped breakbeats, squelchy 303 acid lines, the hoover,
+reese bass, rave organ stabs, hardcore piano, trance-gated supersaws, laser zaps and
+air horns on the drop. Everything except the kick is sidechain-pumped. Each track runs a
+16-bar arrangement (intro, build, anthem hook, a breakdown with siren, snare roll and
+riser, then the drop with a crash and air horn). Use **🎧 Play the music** in the lobby
+to listen while everyone joins. Every device starts the track on the host's clock, so
+the whole room hears the same beat.
 
 ## How the multiplayer works
 

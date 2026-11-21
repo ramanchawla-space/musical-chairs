@@ -120,7 +120,7 @@ test('random scatter: different every round, identical for everyone, never overl
   assert.equal(buildRound(3, 1, ['a', 'b'], 'classic', 'random').layout, 'scatter', 'random mode scatters even a single chair')
 })
 
-test('half the rounds play one of the melodic tracks', async () => {
+test('every round plays a rave track with a hook, and every track gets played', async () => {
   const { roundTrack, TRACKS } = await import('../../src/audio.js')
   let melodic = 0
   const used = new Set()
@@ -191,7 +191,7 @@ test('wild chairs roam the whole floor during AND after the music, never resting
       })
       prev = pts
     }
-    assert.ok(fastest < MOVE_SPEED * 0.8, `n=${n}: chairs top out at ${fastest.toFixed(0)} u/s (players ${MOVE_SPEED})`)
+    assert.ok(fastest < MOVE_SPEED * 3.8, `n=${n}: chairs top out at ${fastest.toFixed(0)} u/s (players ${MOVE_SPEED}) — fast, but no teleporting`)
     assert.ok(longestRest < 0.4, `n=${n}: no chair rests longer than ${longestRest.toFixed(2)}s`)
     for (const b of seen) {
       assert.ok(b.maxX - b.minX > r.arena * 0.8 && b.maxY - b.minY > r.arena * 0.8, `n=${n}: every chair roams across the floor`)
@@ -200,4 +200,81 @@ test('wild chairs roam the whole floor during AND after the music, never resting
     const later = chairsAtTime({ ...round, seed: seed }, 33_333)
     assert.deepEqual(later, chairsAtTime(round, 33_333))
   }
+})
+
+test('wild chairs never slow down when the music stops, and a determined chaser can still catch one', async () => {
+  const { chairsAtTime, MOVE_SPEED, SIT_DISTANCE } = await import('../../src/core.js')
+  for (const [n, seed] of [[2, 7], [3, 11], [12, 3003]]) {
+    const r = buildRound(seed, 1, Array.from({ length: n }, (_, i) => 'p' + i), 'classic')
+    const round = { ...r, motion: 'wild', musicAt: 0, stopAt: 15_000 }
+    const avgSpeed = (from, to) => {
+      let sum = 0
+      let cnt = 0
+      let prev = chairsAtTime(round, from)
+      for (let t = from + 1000 / 60; t <= to; t += 1000 / 60) {
+        const pts = chairsAtTime(round, t)
+        pts.forEach((p, i) => { sum += Math.hypot(p.x - prev[i].x, p.y - prev[i].y) * 60; cnt++ })
+        prev = pts
+      }
+      return sum / cnt
+    }
+    const before = avgSpeed(5_000, 15_000)
+    const after = avgSpeed(15_000, 25_000)
+    assert.ok(after > before * 1.1, `n=${n}: chairs speed up after the stop (${before.toFixed(0)} -> ${after.toFixed(0)} u/s)`)
+    assert.ok(after > MOVE_SPEED * 0.75, `n=${n}: scramble chairs are genuinely fast (${after.toFixed(0)} u/s)`)
+    // A chaser who aims a quarter-second ahead gets a chair within the scramble window.
+    let caught = 0
+    for (let b = 0; b < 8; b++) {
+      const me = { x: Math.cos(b) * r.arena * 0.6, y: Math.sin(b) * r.arena * 0.6 }
+      for (let f = 0; f < 60 * 10; f++) {
+        const t = 15_000 + (f * 1000) / 60
+        const pts = chairsAtTime(round, t)
+        const near = pts.reduce((bi, p, i) => (Math.hypot(p.x - me.x, p.y - me.y) < Math.hypot(pts[bi].x - me.x, pts[bi].y - me.y) ? i : bi), 0)
+        if (Math.hypot(pts[near].x - me.x, pts[near].y - me.y) <= SIT_DISTANCE) { caught++; break }
+        const tg = chairsAtTime(round, t + 250)[near]
+        const d = Math.hypot(tg.x - me.x, tg.y - me.y) || 1
+        me.x += ((tg.x - me.x) / d) * (MOVE_SPEED / 60)
+        me.y += ((tg.y - me.y) / d) * (MOVE_SPEED / 60)
+      }
+    }
+    assert.ok(caught >= 6, `n=${n}: ${caught}/8 chasers caught a chair`)
+  }
+})
+
+test('it gets harder as players are booted: faster chairs, more hazards, bigger floor for big crowds', async () => {
+  const { chairsAtTime, difficulty, roundHazards, HAZARDS, arenaFor } = await import('../../src/core.js')
+  const speedFor = (n) => {
+    const r = buildRound(99, 1, Array.from({ length: n }, (_, i) => 'p' + i), 'classic')
+    const round = { ...r, motion: 'wild', musicAt: 0, stopAt: 10_000 }
+    let sum = 0
+    let cnt = 0
+    let prev = chairsAtTime(round, 10_000)
+    for (let f = 1; f <= 600; f++) {
+      const pts = chairsAtTime(round, 10_000 + (f * 1000) / 60)
+      pts.forEach((p, i) => { sum += Math.hypot(p.x - prev[i].x, p.y - prev[i].y) * 60; cnt++ })
+      prev = pts
+    }
+    return sum / cnt
+  }
+  assert.ok(speedFor(2) > speedFor(20) * 1.2, `final chair (${speedFor(2).toFixed(0)}) is faster than round-one chairs (${speedFor(20).toFixed(0)})`)
+  assert.equal(difficulty(1), 1)
+  assert.equal(difficulty(19), 0)
+  let few = 0
+  let many = 0
+  for (let s = 0; s < 50; s++) {
+    const a = roundHazards(s, 19, 1)
+    const b = roundHazards(s, 1, 8)
+    assert.ok(a.every((h) => HAZARDS.includes(h)))
+    assert.deepEqual(roundHazards(s, 1, 8), b, 'hazards are deterministic')
+    few += a.length
+    many += b.length
+  }
+  assert.ok(many > few * 2, `final rounds stack more hazards (${many / 50} vs ${few / 50})`)
+  assert.ok(arenaFor(200, 20) - arenaFor(200, 5) > 300, 'floor grows with the crowd')
+  // relative to the starting crowd: round one is calm, the final is maximum
+  assert.equal(difficulty(4, 5), 0, '5-player game opens at level 0')
+  assert.equal(difficulty(1, 5), 1, 'and ends at max')
+  assert.equal(difficulty(19, 20), 0)
+  assert.ok(difficulty(10, 20) > 0.4 && difficulty(10, 20) < 0.6, 'half the field gone, halfway hard')
+  assert.equal(difficulty(1, 2), 1, 'a 2-player game is a straight final')
 })
