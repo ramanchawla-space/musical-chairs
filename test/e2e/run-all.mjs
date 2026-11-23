@@ -10,6 +10,7 @@ const SUITE = [
   ['game.mjs', '5 browsers play a full game to a champion', {}],
   ['resilience.mjs', 'drop-outs, refresh, late joiners, big-screen host', {}],
   ['mobile.mjs', 'phone layout + touch controls', {}],
+  ['levels.mjs', 'levels 4-5: obstacles and a spinning floor never hide the chairs', {}],
   ['cloud.mjs', 'real PeerJS cloud broker (production path)', { CLOUD: '1' }],
 ]
 

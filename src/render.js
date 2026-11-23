@@ -1,21 +1,29 @@
-// Canvas renderer: animated themed backdrop, a raised 3D light-up stage seen
-// in perspective, solid 3D chairs, dancing avatars, a pool of random
-// hazards (fog, birds, bouncers, disco balls, lasers, smoke, lights out...), the "BOOTED!" kick-out animation, reactions and confetti.
+// Canvas renderer: a themed backdrop, a big rectangular checkerboard floor
+// seen in perspective, wooden chairs standing on it, real men and women
+// walking, dancing and sitting, a pool of random hazards that only appear
+// once the music stops (fog, birds, bouncers, disco balls, lasers, smoke,
+// lights out...), the "BOOTED!" kick-out animation, reactions and confetti.
+// While the music plays the scene is kept calm so you can follow the dance.
 
-import { avatarCanvas } from './avatars.js'
-import { PLAYER_RADIUS, CHAIR_RADIUS, chairVisibility, chairLayout, chairPosAt, roundLevel, bouncers, BOUNCER_RADIUS, roamPos } from './core.js'
+import { drawPerson } from './people.js'
+import { drawBoardTop, frameWidth } from './board.js'
+import { drawBeach, drawBeachFront, drawSky, SKIES } from './beach.js'
+import { PLAYER_RADIUS, CHAIR_RADIUS, chairVisibility, chairLayout, chairPosAt, roundLevel, levelOf, roundTable, bouncers, BOUNCER_RADIUS, roamPos, boardSize, BOARD_X, BOARD_Y } from './core.js'
+import { drawGoldTiles } from './board.js'
+
+export const PERSON_HEIGHT = 124 // world units (a chair seat is 33 high)
 
 export const THEME_INFO = {
   neon: {
-    label: 'Neon Rave', blurb: 'Lasers, haze & a light-up floor',
+    label: SKIES.neon.label, blurb: SKIES.neon.blurb,
     accent: '#ff3cac', accent2: '#00e5ff', chair: '#00e5ff', hue: 300, floor: 'rgba(12,0,30,0.5)',
   },
   cosmic: {
-    label: 'Cosmic Galaxy', blurb: 'Nebulae, starfields & a spiral galaxy',
+    label: SKIES.cosmic.label, blurb: SKIES.cosmic.blurb,
     accent: '#8b5cff', accent2: '#2bffc6', chair: '#b9a6ff', hue: 220, floor: 'rgba(4,2,22,0.42)',
   },
   sunset: {
-    label: 'Synthwave Sunset', blurb: 'Retro sun, grid horizon & mountains',
+    label: SKIES.sunset.label, blurb: SKIES.sunset.blurb,
     accent: '#ff2e88', accent2: '#ffb000', chair: '#ffcf4a', hue: 330, floor: 'rgba(30,0,40,0.5)',
   },
 }
@@ -43,15 +51,7 @@ export class Renderer {
     this.time = 0
     this.yaw = 0
     this.tiltBob = 0
-    this.stars = Array.from({ length: 280 }, (_, i) => ({
-      x: hash('sx' + i), y: hash('sy' + i), s: 0.4 + hash('ss' + i) * 1.6, p: hash('sp' + i) * TAU,
-    }))
-    this.galaxy = Array.from({ length: 520 }, (_, i) => {
-      const arm = i % 3
-      const d = hash('gd' + i)
-      return { arm, d, off: (hash('go' + i) - 0.5) * 0.5, s: 0.5 + hash('gs' + i) * 1.5 }
-    })
-    this.dust = Array.from({ length: 70 }, (_, i) => ({ x: hash('dx' + i), y: hash('dy' + i), v: 0.2 + hash('dv' + i), s: 1 + hash('dsz' + i) * 2.5 }))
+    this.gait = new Map() // per player: last position + walk phase, for the walk cycle
     this.resize()
     window.addEventListener('resize', () => this.resize())
   }
@@ -71,6 +71,7 @@ export class Renderer {
 
 
   flash(color = '#fff', a = 0.7) { this.flashColor = color; this.flashA = a }
+
   bump(amount = 14) { this.shake = amount }
 
   burst(x, y, color, n = 26) {
@@ -94,6 +95,11 @@ export class Renderer {
 
   react(id, e) { this.reactions.push({ id, e, age: 0, dx: (Math.random() - 0.5) * 30 }) }
 
+  // Floating score text over a player's head ("+340  ⚡0.62s").
+  popText(id, text, color = '#ffe600', big = false) {
+    (this.pops ||= []).push({ id, text, color, big, age: 0 })
+  }
+
   // --- 3D camera ------------------------------------------------------------------
   // The floor is a disc in world (x, y) with z pointing up. The camera hangs
   // above the front of the floor looking down at it at `tilt` radians, with
@@ -114,6 +120,16 @@ export class Renderer {
 
   toScreen(x, y, z = 0) { return this.proj(x, y, z) }
 
+  // Draw with the board's sway switched off: the beach stays put while the
+  // board turns on its deck.
+  fixedWorld(fn) {
+    const c = this.cosY
+    const s = this.sinY
+    this.cosY = 1
+    this.sinY = 0
+    try { fn() } finally { this.cosY = c; this.sinY = s }
+  }
+
   // Screen point -> spot on the floor (z = 0).
   toWorld(sx, sy) {
     const v = this.view
@@ -127,7 +143,7 @@ export class Renderer {
 
   setCamera(extent) {
     const portrait = this.w / Math.max(1, this.h) < 0.9
-    const tilt = (portrait ? 0.62 : 0.98) + this.tiltBob
+    const tilt = (portrait ? 0.62 : 0.8) + this.tiltBob
     this.cosY = Math.cos(this.yaw)
     this.sinY = Math.sin(this.yaw)
     this.cosT = Math.cos(tilt)
@@ -135,25 +151,36 @@ export class Renderer {
     this.camD = extent * 3.4
   }
 
-  // Unit-scale bounding box of the projected floor (plus head room at the back).
-  footprint(E) {
+  // Unit-scale bounding box of the projected board (plus head room at the back).
+  footprint(E, swing = 0) {
     const c = this.cosT
     const s = this.sinT
     const D = this.camD
+    const b = boardSize(E)
+    const fw = frameWidth(b.hx, b.hy)
+    const hx = b.hx + fw
+    const hy = b.hy + fw
     let x0 = Infinity
     let x1 = -Infinity
     let y0 = Infinity
     let y1 = -Infinity
-    for (let i = 0; i < 48; i++) {
-      const a = (i / 48) * TAU
-      const x = Math.cos(a) * E
-      const y = Math.sin(a) * E
-      for (const z of [-40, 70]) {
-        const k = D / (D - y * s - z * c)
-        const px = x * k
-        const py = (y * c - z * s) * k
-        x0 = Math.min(x0, px); x1 = Math.max(x1, px)
-        y0 = Math.min(y0, py); y1 = Math.max(y1, py)
+    for (let i = 0; i < 64; i++) {
+      // walk round the rectangle's edge, at every angle the board sways to
+      const u = i / 64
+      const side = Math.floor(u * 4)
+      const f = u * 4 - side
+      const bx = side === 0 ? -hx + 2 * hx * f : side === 1 ? hx : side === 2 ? hx - 2 * hx * f : -hx
+      const by = side === 0 ? -hy : side === 1 ? -hy + 2 * hy * f : side === 2 ? hy : hy - 2 * hy * f
+      for (const yaw of swing ? [-swing, 0, swing] : [0]) {
+        const x = bx * Math.cos(yaw) - by * Math.sin(yaw)
+        const y = bx * Math.sin(yaw) + by * Math.cos(yaw)
+        for (const z of [-40, PERSON_HEIGHT + 20]) {
+          const k = D / (D - y * s - z * c)
+          const px = x * k
+          const py = (y * c - z * s) * k
+          x0 = Math.min(x0, px); x1 = Math.max(x1, px)
+          y0 = Math.min(y0, py); y1 = Math.max(y1, py)
+        }
       }
     }
     return { x0, x1, y0, y1 }
@@ -200,6 +227,7 @@ export class Renderer {
   draw(client, opts) {
     const { dt, pulse = 0, phaseAge = 0 } = opts
     this.time += dt
+
     const g = this.g
     const t = this.time
     g.setTransform(this.dpr, 0, 0, this.dpr, 0, 0)
@@ -210,50 +238,61 @@ export class Renderer {
     const phase = state?.phase || 'home'
 
     // Fit the tilted floor between the HUD bars, easing when the arena resizes.
-    const extent = round && phase !== 'lobby' ? round.arena : 330
+    // Lobby: big enough that the mingling ring (radius up to ~310 + 6/player) stays on the board.
+    const crowd = client?.roster ? client.roster.size : 0
+    const extent = round && phase !== 'lobby' ? round.arena : (330 + crowd * 6) / 0.74
     this.extentNow = this.extentNow ? this.extentNow + (extent - this.extentNow) * Math.min(1, dt * 3) : extent
     const E = this.extentNow
-    // The floor slowly turns while the music plays; the Spinning floor hazard
-    // whips it round (and reverses) once it stops. Lobby eases back to front.
+    // The board holds still, square to the camera. Only the Spinning floor
+    // hazard turns it, and only once the music stops; otherwise it eases back.
+    // The Spinning floor sways the board to and fro (up to ~26 degrees at the
+    // top level), never so far that a chair leaves the screen.
     const lv = round ? roundLevel(round) : 0
-    const spinHaz = round?.hazards?.includes('spin')
-    let yawSpeed = 0
-    if (phase === 'music') yawSpeed = spinHaz ? 0.25 : 0.06
-    else if (phase === 'scramble') yawSpeed = spinHaz ? (0.45 + 0.6 * lv) * Math.sin(t * 0.55) : 0.04
-    if (yawSpeed) this.yaw += yawSpeed * dt
-    else if (phase === 'lobby' || phase === 'home' || phase === 'winner') this.yaw -= Math.atan2(Math.sin(this.yaw), Math.cos(this.yaw)) * Math.min(1, dt * 1.5)
-    this.tiltBob = phase === 'music' ? pulse * 0.025 : 0
+    const spinHaz = !!round?.hazards?.includes('spin')
+    const swing = spinHaz ? 0.25 + 0.2 * lv : 0
+    const yawTarget = phase === 'scramble' && spinHaz ? swing * Math.sin(t * 0.5) : 0
+    this.yaw += (yawTarget - this.yaw) * Math.min(1, dt * 2.5)
+    this.tiltBob = 0
     this.setCamera(E)
     const top = 70
     const bottom = phase === 'home' ? 0 : 84
     const availH = this.h - top - bottom
-    const pad = this.padRight || 0
-    const availW = this.w - pad - 16
-    const fp = this.footprint(E)
+    const padL = this.padLeft || 0
+    const padR = this.padRight || 0
+    const availW = this.w - padL - padR - 16
+    // Frame the board for the whole sway, so the camera holds steady instead
+    // of zooming in and out as it turns.
+    const fp = this.footprint(E, swing)
     const scale = Math.min(availW / (fp.x1 - fp.x0), availH / (fp.y1 - fp.y0))
     const sh = this.shake
     this.shake *= Math.pow(0.02, dt)
     this.view = {
-      x: (this.w - pad) / 2 - ((fp.x0 + fp.x1) / 2) * scale + (Math.random() - 0.5) * sh,
-      y: top + availH / 2 - ((fp.y0 + fp.y1) / 2) * scale + (Math.random() - 0.5) * sh,
+      x: padL + (this.w - padL - padR) / 2 - ((fp.x0 + fp.x1) / 2) * scale + (Math.random() - 0.5) * sh,
+      // sit the board low on screen so the sea and sky open up above it,
+      // but never so low that a tall phone screen is mostly water
+      y: Math.min(top + availH - fp.y1 * scale, top + availH / 2 - ((fp.y0 + fp.y1) / 2) * scale + this.h * 0.08) + (Math.random() - 0.5) * sh,
       scale,
     }
     this.scale = scale
 
     if (client && state) {
+      this.fixedWorld(() => drawBeach(this, g, E, t, phase, this.theme))
       this.floor(g, E, t, pulse, phase)
       const scene = []
-      const live = round && (phase === 'music' || phase === 'scramble')
-      this.speakers(scene, E, pulse)
-      if (round && phase !== 'lobby') this.chairs(scene, client, t, phase, pulse)
+      // Hazards only come out once the music stops: the dance stays clear.
+      const live = round && phase === 'scramble'
+      const play = round && phase !== 'lobby' && phase !== 'levelup' && phase !== 'winner'
+      if (play) drawGoldTiles(this, g, round, E, t)
+      if (play) this.chairs(scene, client, t, phase, pulse)
       if (live) this.sceneHazards(scene, client, t, phase, E)
       this.players(scene, client, t, pulse, phase, phaseAge)
       // painter's algorithm in camera space: far first
       const depth = (it) => (it.x || 0) * this.sinY + it.y * this.cosY
       scene.sort((a, b) => depth(a) - depth(b))
+      this.reflections(g, scene, E)
       for (const item of scene) item.draw(g)
+      this.fixedWorld(() => drawBeachFront(this, g, E, t))
       this.worldParticles(g, dt)
-      this.mirrorBall(g, E, t, pulse, phase)
       this.reactionsAndTarget(g, client, t, phase)
       if (live) this.hazards(g, client, t, phase, E)
     }
@@ -267,319 +306,75 @@ export class Renderer {
     }
   }
 
+  // Mirror images of the people and chairs in the polished marble: drawn
+  // upside down into an offscreen layer, then laid faintly over the board.
+  reflections(g, scene, E) {
+    const cw = this.canvas.width
+    const ch = this.canvas.height
+    if (!this.reflCanvas || this.reflCanvas.width !== cw || this.reflCanvas.height !== ch) {
+      this.reflCanvas = document.createElement('canvas')
+      this.reflCanvas.width = cw
+      this.reflCanvas.height = ch
+    }
+    const rc = this.reflCanvas
+    const rg = rc.getContext('2d')
+    rg.setTransform(1, 0, 0, 1, 0, 0)
+    rg.clearRect(0, 0, cw, ch)
+    rg.setTransform(this.dpr, 0, 0, this.dpr, 0, 0)
+    let any = false
+    for (const item of scene) {
+      if (!item.reflect) continue
+      rg.save()
+      item.reflect(rg)
+      rg.restore()
+      any = true
+    }
+    if (!any) return
+    const { hx, hy } = boardSize(E)
+    g.save()
+    this.poly(g, [[-hx, -hy], [hx, -hy], [hx, hy], [-hx, hy]].map(([x, y]) => this.proj(x, y, 0)))
+    g.clip()
+    g.globalAlpha = 0.22
+    g.setTransform(1, 0, 0, 1, 0, 0)
+    g.drawImage(rc, 0, 0)
+    g.restore()
+  }
+
   // --- Backgrounds --------------------------------------------------------------------
 
   background(g, t, pulse) {
-    if (this.theme === 'cosmic') return this.bgCosmic(g, t, pulse)
-    if (this.theme === 'sunset') return this.bgSunset(g, t, pulse)
-    return this.bgNeon(g, t, pulse)
+    drawSky(this, g, t, this.theme)
   }
 
-  bgNeon(g, t, pulse) {
-    const { w, h } = this
-    const bg = g.createLinearGradient(0, 0, 0, h)
-    bg.addColorStop(0, '#0b0020')
-    bg.addColorStop(0.55, '#1a0036')
-    bg.addColorStop(1, '#050010')
-    g.fillStyle = bg
-    g.fillRect(0, 0, w, h)
-    g.globalCompositeOperation = 'lighter'
-    // Haze
-    const blobs = [['255,60,172', 0.2], ['0,229,255', 0.16], ['140,60,255', 0.18]]
-    blobs.forEach(([c, a], i) => {
-      const x = w * (0.5 + 0.38 * Math.sin(t * 0.13 + i * 2.1))
-      const y = h * (0.5 + 0.33 * Math.cos(t * 0.11 + i * 1.7))
-      const r = Math.max(w, h) * 0.55
-      const rg = g.createRadialGradient(x, y, 0, x, y, r)
-      rg.addColorStop(0, `rgba(${c},${a + pulse * 0.08})`)
-      rg.addColorStop(1, `rgba(${c},0)`)
-      g.fillStyle = rg
-      g.fillRect(0, 0, w, h)
-    })
-    // Lasers fanning from the corners
-    const sources = [[0, h], [w, h], [0, 0], [w, 0], [w / 2, h + 40]]
-    const L = Math.hypot(w, h) * 1.1
-    sources.forEach(([sx, sy], si) => {
-      const base = Math.atan2(h / 2 - sy, w / 2 - sx)
-      for (let i = 0; i < 5; i++) {
-        const a = base + Math.sin(t * (0.5 + si * 0.13) + i * 1.3 + si) * 0.65 + (i - 2) * 0.12
-        const hue = (t * 40 + si * 70 + i * 25) % 360
-        const ex = sx + Math.cos(a) * L
-        const ey = sy + Math.sin(a) * L
-        const lg = g.createLinearGradient(sx, sy, ex, ey)
-        const al = 0.18 + pulse * 0.35
-        lg.addColorStop(0, `hsla(${hue},100%,65%,${al})`)
-        lg.addColorStop(1, `hsla(${hue},100%,65%,0)`)
-        g.strokeStyle = lg
-        g.lineWidth = 2 + pulse * 2
-        g.beginPath()
-        g.moveTo(sx, sy)
-        g.lineTo(ex, ey)
-        g.stroke()
-      }
-    })
-    // Floating dust
-    for (const d of this.dust) {
-      const y = ((d.y - t * 0.02 * d.v) % 1 + 1) % 1
-      g.fillStyle = `rgba(255,200,255,${0.25 + 0.2 * Math.sin(t * 2 + d.x * 30)})`
-      g.beginPath()
-      g.arc(d.x * w, y * h, d.s, 0, TAU)
+  // --- The floor: a big raised checkerboard -------------------------------------------
+
+  floor(g, E, t, pulse, phase) {
+    const { hx, hy } = boardSize(E)
+    const H = 6 // a marble slab sitting on the wooden deck
+    const fw = frameWidth(hx, hy)
+    const C = [[-hx - fw, -hy - fw], [hx + fw, -hy - fw], [hx + fw, hy + fw], [-hx - fw, hy + fw]]
+    // Stage side walls facing the camera: dark lacquer with a gold trim.
+    const normals = [[0, -1], [1, 0], [0, 1], [-1, 0]]
+    for (let e = 0; e < 4; e++) {
+      const [nx, ny] = normals[e]
+      if (nx * this.sinY + ny * this.cosY <= 0) continue
+      const [ax, ay] = C[e]
+      const [bx, by] = C[(e + 1) % 4]
+      const pts = [this.proj(ax, ay, 0), this.proj(bx, by, 0), this.proj(bx, by, -H), this.proj(ax, ay, -H)]
+      const sg = g.createLinearGradient(0, Math.min(pts[0].y, pts[1].y), 0, Math.max(pts[2].y, pts[3].y))
+      sg.addColorStop(0, '#2a1810')
+      sg.addColorStop(1, '#0d0705')
+      g.fillStyle = sg
+      this.poly(g, pts)
       g.fill()
-    }
-    g.globalCompositeOperation = 'source-over'
-  }
-
-  bgCosmic(g, t, pulse) {
-    const { w, h } = this
-    const bg = g.createRadialGradient(w / 2, h / 2, 0, w / 2, h / 2, Math.max(w, h) * 0.8)
-    bg.addColorStop(0, '#0d0730')
-    bg.addColorStop(1, '#010008')
-    g.fillStyle = bg
-    g.fillRect(0, 0, w, h)
-    g.globalCompositeOperation = 'lighter'
-    const neb = [['139,92,255', 0.22], ['43,255,198', 0.12], ['255,60,172', 0.14], ['60,120,255', 0.16]]
-    neb.forEach(([c, a], i) => {
-      const ang = t * 0.03 + i * (TAU / neb.length)
-      const x = w / 2 + Math.cos(ang) * w * 0.32
-      const y = h / 2 + Math.sin(ang * 1.3) * h * 0.3
-      const r = Math.max(w, h) * (0.35 + 0.08 * Math.sin(t * 0.2 + i))
-      const rg = g.createRadialGradient(x, y, 0, x, y, r)
-      rg.addColorStop(0, `rgba(${c},${a})`)
-      rg.addColorStop(1, `rgba(${c},0)`)
-      g.fillStyle = rg
-      g.fillRect(0, 0, w, h)
-    })
-    for (const s of this.stars) {
-      const a = 0.35 + 0.65 * (0.5 + 0.5 * Math.sin(t * 1.7 + s.p))
-      g.fillStyle = `rgba(255,255,255,${a})`
-      g.fillRect(s.x * w, s.y * h, s.s, s.s)
-    }
-    // Spiral galaxy turning slowly behind the floor
-    const cx = w / 2
-    const cy = h / 2
-    const R = Math.min(w, h) * 0.62
-    for (const p of this.galaxy) {
-      const r = p.d * R
-      const a = p.arm * (TAU / 3) + p.d * 5.2 + p.off - t * 0.05
-      const x = cx + Math.cos(a) * r
-      const y = cy + Math.sin(a) * r * 0.62
-      const hue = 250 - p.d * 90
-      g.fillStyle = `hsla(${hue},90%,${70 - p.d * 20}%,${(1 - p.d) * 0.7 + pulse * 0.2})`
-      g.fillRect(x, y, p.s, p.s)
-    }
-    // Shooting star
-    const cyc = (t % 5) / 5
-    if (cyc < 0.18) {
-      const k = Math.floor(t / 5)
-      const sx = hash('ssx' + k) * w
-      const sy = hash('ssy' + k) * h * 0.5
-      const u = cyc / 0.18
-      const x = sx + u * 320
-      const y = sy + u * 140
-      const lg = g.createLinearGradient(x - 120, y - 52, x, y)
-      lg.addColorStop(0, 'rgba(255,255,255,0)')
-      lg.addColorStop(1, 'rgba(255,255,255,0.9)')
-      g.strokeStyle = lg
-      g.lineWidth = 2
+      g.strokeStyle = '#c9a43a'
+      g.lineWidth = 1.5
       g.beginPath()
-      g.moveTo(x - 120, y - 52)
-      g.lineTo(x, y)
+      g.moveTo(pts[3].x, pts[3].y)
+      g.lineTo(pts[2].x, pts[2].y)
       g.stroke()
     }
-    g.globalCompositeOperation = 'source-over'
-  }
-
-  bgSunset(g, t, pulse) {
-    const { w, h } = this
-    const hz = h * 0.6
-    const sky = g.createLinearGradient(0, 0, 0, hz)
-    sky.addColorStop(0, '#0d0221')
-    sky.addColorStop(0.45, '#3b0a54')
-    sky.addColorStop(0.8, '#b0186e')
-    sky.addColorStop(1, '#ff6b3d')
-    g.fillStyle = sky
-    g.fillRect(0, 0, w, hz)
-    for (const s of this.stars) {
-      if (s.y > 0.5) continue
-      g.fillStyle = `rgba(255,220,255,${0.3 + 0.5 * Math.sin(t + s.p) ** 2})`
-      g.fillRect(s.x * w, s.y * hz, s.s, s.s)
-    }
-    // The striped retro sun
-    const sr = Math.min(w, h) * 0.26 * (1 + pulse * 0.03)
-    const sx = w / 2
-    const sy = hz - sr * 0.35
-    g.save()
-    g.beginPath()
-    g.arc(sx, sy, sr, 0, TAU)
-    g.clip()
-    const sg = g.createLinearGradient(0, sy - sr, 0, sy + sr)
-    sg.addColorStop(0, '#ffe66b')
-    sg.addColorStop(0.5, '#ff8a3c')
-    sg.addColorStop(1, '#ff2e88')
-    g.fillStyle = sg
-    g.fillRect(sx - sr, sy - sr, sr * 2, sr * 2)
-    g.fillStyle = '#3b0a54'
-    for (let i = 0; i < 8; i++) {
-      const yy = sy + sr * (0.05 + i * 0.13) + ((t * 12) % (sr * 0.13))
-      g.fillRect(sx - sr, yy, sr * 2, 2 + i * 1.6)
-    }
-    g.restore()
-    g.globalCompositeOperation = 'lighter'
-    const glow = g.createRadialGradient(sx, sy, sr * 0.6, sx, sy, sr * 2.2)
-    glow.addColorStop(0, 'rgba(255,90,140,0.35)')
-    glow.addColorStop(1, 'rgba(255,90,140,0)')
-    g.fillStyle = glow
-    g.fillRect(0, 0, w, hz)
-    g.globalCompositeOperation = 'source-over'
-    // Mountains
-    const ridge = (amp, base, color, seed) => {
-      g.fillStyle = color
-      g.beginPath()
-      g.moveTo(0, hz)
-      for (let x = 0; x <= w + 20; x += 20) {
-        const n = Math.sin(x * 0.006 + seed) * 0.5 + Math.sin(x * 0.017 + seed * 2) * 0.3 + Math.sin(x * 0.041 + seed * 3) * 0.2
-        g.lineTo(x, hz - base - Math.abs(n) * amp)
-      }
-      g.lineTo(w, hz)
-      g.fill()
-    }
-    ridge(h * 0.14, 6, '#24083d', 1.2)
-    ridge(h * 0.08, 0, '#150326', 4.1)
-    // Grid floor
-    const fg = g.createLinearGradient(0, hz, 0, h)
-    fg.addColorStop(0, '#1a0430')
-    fg.addColorStop(1, '#080012')
-    g.fillStyle = fg
-    g.fillRect(0, hz, w, h - hz)
-    g.strokeStyle = `rgba(255,46,136,${0.55 + pulse * 0.3})`
-    g.lineWidth = 1.5
-    g.beginPath()
-    for (let i = -20; i <= 20; i++) {
-      g.moveTo(w / 2 + i * 12, hz)
-      g.lineTo(w / 2 + i * w * 0.16, h)
-    }
-    const off = (t * 0.6) % 1
-    for (let i = 0; i < 14; i++) {
-      const u = (i + off) / 14
-      const y = hz + (h - hz) * u * u
-      g.moveTo(0, y)
-      g.lineTo(w, y)
-    }
-    g.stroke()
-    g.fillStyle = 'rgba(255,120,200,0.8)'
-    g.fillRect(0, hz - 1, w, 2)
-  }
-
-  // --- Dance floor (a raised 3D stage) ------------------------------------------------------
-
-  floor(g, R, t, pulse, phase) {
-    const th = THEME_INFO[this.theme]
-    const stopped = phase === 'scramble' || phase === 'result'
-    const H = 34
-    // Stage side wall: the front half of the cylinder, from the rim down.
-    const front = []
-    const back = []
-    for (let i = 0; i <= 40; i++) {
-      const a = (i / 40) * Math.PI - this.yaw
-      front.push(this.proj(Math.cos(a) * R, Math.sin(a) * R, 0))
-      back.push(this.proj(Math.cos(a) * R, Math.sin(a) * R, -H))
-    }
-    const lowest = back.reduce((m, p) => Math.max(m, p.y), 0)
-    const side = g.createLinearGradient(0, front[20].y, 0, lowest)
-    side.addColorStop(0, '#2a0a45')
-    side.addColorStop(1, '#07010f')
-    g.fillStyle = side
-    this.poly(g, [...front, ...back.reverse()])
-    g.fill()
-    // under-glow LED strip along the bottom edge
-    g.save()
-    g.shadowColor = th.accent2
-    g.shadowBlur = 20 + pulse * 20
-    g.strokeStyle = th.accent2
-    g.lineWidth = 3
-    g.beginPath()
-    back.forEach((p, i) => (i ? g.lineTo(p.x, p.y) : g.moveTo(p.x, p.y)))
-    g.stroke()
-    g.restore()
-
-    // Top surface
-    g.fillStyle = '#0a0216'
-    this.groundPath(g, 0, 0, R)
-    g.fill()
-    g.fillStyle = th.floor
-    g.fill()
-
-    // Light-up tiles (each tile is a projected polygon, so they foreshorten)
-    g.globalCompositeOperation = 'lighter'
-    const rings = 7
-    for (let j = 0; j < rings; j++) {
-      const r0 = (j / rings) * R
-      const r1 = ((j + 1) / rings) * R - 3
-      const segs = 10 + j * 6
-      for (let s = 0; s < segs; s++) {
-        const a0 = (s / segs) * TAU + j * 0.2
-        const a1 = a0 + TAU / segs - 0.03
-        const wave = 0.5 + 0.5 * Math.sin(s * (TAU / segs) * 3 - t * 3 + j * 0.9)
-        const hue = (th.hue + (s / segs) * 120 + t * 30 + j * 20) % 360
-        const al = stopped ? 0.07 + 0.1 * wave : 0.06 + 0.3 * wave * wave * (0.45 + pulse * 0.8)
-        g.fillStyle = stopped ? `hsla(${350 + wave * 20},95%,55%,${al})` : `hsla(${hue},100%,60%,${al})`
-        const n = 3
-        const pts = []
-        for (let q = 0; q <= n; q++) {
-          const a = a0 + ((a1 - a0) * q) / n
-          pts.push(this.proj(Math.cos(a) * r1, Math.sin(a) * r1))
-        }
-        for (let q = n; q >= 0; q--) {
-          const a = a0 + ((a1 - a0) * q) / n
-          pts.push(this.proj(Math.cos(a) * r0, Math.sin(a) * r0))
-        }
-        this.poly(g, pts)
-        g.fill()
-      }
-    }
-    // Sweeping spotlights on the floor (searchlights once the music stops)
-    for (let i = 0; i < 3; i++) {
-      const sp = stopped ? 1.4 : 0.45
-      const x = Math.sin(t * sp * (0.7 + i * 0.23) + i * 2.1) * R * 0.65
-      const y = Math.cos(t * sp * (0.5 + i * 0.31) + i * 1.3) * R * 0.65
-      const col = stopped ? '255,240,220' : `${i === 0 ? '255,60,172' : i === 1 ? '0,229,255' : '255,230,0'}`
-      this.flatBlob(g, x, y, R * 0.28, 0, `rgba(${col},${0.22 + pulse * 0.1})`, `rgba(${col},0)`)
-      // light shaft from the rig above down to the pool of light
-      const P = this.proj(x, y, 0)
-      const hw = R * 0.26 * P.k
-      const src = { x: this.w * (0.2 + 0.3 * i), y: -20 }
-      const lg = g.createLinearGradient(src.x, src.y, P.x, P.y)
-      lg.addColorStop(0, `rgba(${col},0)`)
-      lg.addColorStop(1, `rgba(${col},${0.07 + pulse * 0.05})`)
-      g.fillStyle = lg
-      g.beginPath()
-      g.moveTo(src.x - 6, src.y)
-      g.lineTo(src.x + 6, src.y)
-      g.lineTo(P.x + hw, P.y)
-      g.lineTo(P.x - hw, P.y)
-      g.closePath()
-      g.fill()
-    }
-    g.globalCompositeOperation = 'source-over'
-
-    // Glowing rim
-    g.save()
-    g.shadowColor = th.accent
-    g.shadowBlur = 30 + pulse * 30
-    g.strokeStyle = th.accent
-    g.lineWidth = 4
-    this.groundPath(g, 0, 0, R)
-    g.stroke()
-    g.restore()
-    g.strokeStyle = th.accent2
-    g.globalAlpha = 0.5
-    g.setLineDash([10, 14])
-    g.lineDashOffset = -t * 40
-    g.lineWidth = 2
-    this.groundPath(g, 0, 0, R - 12)
-    g.stroke()
-    g.setLineDash([])
-    g.globalAlpha = 1
+    drawBoardTop(this, g, E, t, phase)
   }
 
   // --- Chairs (solid 3D: legs, padded seat, backrest) ---------------------------------
@@ -596,10 +391,25 @@ export class Renderer {
     const lv = roundLevel(round)
     pts.forEach((c, i) => {
       const taken = !!owners[i]
-      // Wild chairs blink out of sight (a faint shimmer is all that's left).
-      const vis = wild && !taken ? Math.max(0.04, chairVisibility(round.seed, i, since, lv)) : 1
-      scene.push({ x: c.x, y: c.y, draw: (g) => this.drawChair(g, c, i, t, pulse, th, taken, scramble && !taken, vis) })
+      // Wild chairs blink out of sight once the music stops (never during the dance).
+      const blink = levelOf(round).blink
+      // Special chairs never blink: they're the prizes everyone can see.
+      const throne = round.thrones?.includes(i) ? 'throne' : round.silvers?.includes(i) ? 'silver' : false
+      const vis = wild && !taken && scramble && blink && !throne ? Math.max(0.04, chairVisibility(round.seed, i, since, blink)) : 1
+      scene.push({
+        x: c.x, y: c.y,
+        draw: (g) => this.drawChair(g, c, i, t, pulse, th, taken, scramble && !taken, vis, throne),
+        reflect: (g) => { this.mirror = true; this.drawChair(g, c, i, t, pulse, th, taken, false, vis, throne); this.mirror = false },
+      })
     })
+    // The round table everyone who sits ends up at (fades in after the stop).
+    if (round.stopAt && (phase === 'scramble' || phase === 'result')) {
+      const fade = Math.min(1, Math.max(0, (hostT - round.stopAt) / 900))
+      if (fade > 0) {
+        const tb = roundTable(round)
+        scene.push({ x: 0, y: 0, draw: (g) => this.drawTable(g, tb.top, fade) })
+      }
+    }
     // Decoy "mirage" chairs during the scramble: they look free, but aren't real.
     if (scramble && round.hazards?.includes('mirage')) {
       for (const d of this.decoys(round, hostT)) {
@@ -613,7 +423,7 @@ export class Renderer {
       this.decoyFor = round.seed
       const n = Math.max(2, Math.ceil(round.chairs.length * 0.7) + Math.round(roundLevel(round) * 4))
       const seed = (round.seed ^ 0xdec0) >>> 0
-      this.decoyRound = { ...round, seed, chairs: chairLayout('scatter', n, seed) }
+      this.decoyRound = { ...round, seed, chairs: chairLayout('scatter', n, seed), seats: null }
     }
     const dr = { ...this.decoyRound, musicAt: round.musicAt, stopAt: round.stopAt, arena: round.arena }
     const since = (hostT - round.musicAt) / 1000
@@ -626,64 +436,163 @@ export class Renderer {
     })
   }
 
-  drawChair(g, c, i, t, pulse, th, taken, free, vis) {
+  // A round table with a white cloth, on a dark pedestal, with a little
+  // flower centrepiece. Seated players' chairs gather round it.
+  drawTable(g, R, alpha) {
+    const H = 46
+    g.save()
+    g.globalAlpha = alpha
+    this.flatBlob(g, 0, 0, R * 1.15, 0, 'rgba(0,0,0,0.4)', 'rgba(0,0,0,0)')
+    // pedestal
+    const foot = this.proj(0, 0, 0)
+    const neck = this.proj(0, 0, H - 4)
+    const k = foot.k
+    g.fillStyle = '#2b1d14'
+    g.save()
+    g.translate(foot.x, foot.y)
+    g.scale(1, this.cosT)
+    g.beginPath()
+    g.arc(0, 0, Math.min(R * 0.35, 40) * k, 0, TAU)
+    g.fill()
+    g.restore()
+    g.strokeStyle = '#3a2819'
+    g.lineWidth = Math.max(4, 12 * k)
+    g.beginPath()
+    g.moveTo(foot.x, foot.y)
+    g.lineTo(neck.x, neck.y)
+    g.stroke()
+    // tablecloth: the hanging skirt, then the top
+    const rim = []
+    const low = []
+    for (let i = 0; i <= 48; i++) {
+      const a = (i / 48) * Math.PI - this.yaw
+      rim.push(this.proj(Math.cos(a) * R, Math.sin(a) * R, H))
+      low.push(this.proj(Math.cos(a) * R * 1.02, Math.sin(a) * R * 1.02, H - 14))
+    }
+    g.fillStyle = '#d9d4ca'
+    this.poly(g, [...rim, ...low.reverse()])
+    g.fill()
+    const c = this.proj(0, 0, H)
+    const tg = g.createRadialGradient(c.x, c.y - R * c.k * 0.3, 0, c.x, c.y, R * c.k * 1.1)
+    tg.addColorStop(0, '#ffffff')
+    tg.addColorStop(1, '#e6e1d6')
+    g.fillStyle = tg
+    this.groundPath(g, 0, 0, R, H)
+    g.fill()
+    g.strokeStyle = 'rgba(120,100,80,0.35)'
+    g.lineWidth = 1.5
+    g.stroke()
+    // centrepiece: a small vase of flowers
+    const v0 = this.proj(0, 0, H)
+    const v1 = this.proj(0, 0, H + 22)
+    const vk = v0.k
+    g.fillStyle = '#5a7fb0'
+    roundRect(g, v0.x - 6 * vk, v1.y + 8 * vk, 12 * vk, v0.y - v1.y - 8 * vk, 4 * vk)
+    g.fill()
+    const petals = ['#ff6b8a', '#ffd166', '#ff9f5a', '#c77dff', '#ff6b8a']
+    petals.forEach((col, i) => {
+      const a = -Math.PI / 2 + (i - 2) * 0.45
+      const fx = v1.x + Math.cos(a) * 10 * vk
+      const fy = v1.y + Math.sin(a) * 8 * vk
+      g.strokeStyle = '#3f7d3a'
+      g.lineWidth = Math.max(1, 1.5 * vk)
+      g.beginPath()
+      g.moveTo(v1.x, v1.y + 10 * vk)
+      g.lineTo(fx, fy)
+      g.stroke()
+      g.fillStyle = col
+      g.beginPath()
+      g.arc(fx, fy, 4.5 * vk, 0, TAU)
+      g.fill()
+    })
+    g.restore()
+  }
+
+  // A real wooden chair standing on the floor: four legs, a seat with some
+  // thickness, and a slatted backrest on two tall back posts.
+  // A throne is the same chair in gilded wood with a purple cushion, a tall
+  // back and a crown on top. A silver chair is polished silver with a blue
+  // cushion and a slightly taller back. `kind`: 'throne' | 'silver' | false.
+  drawChair(g, c, i, t, pulse, th, taken, free, vis, kind = false) {
+    const throne = kind === 'throne'
+    const silver = kind === 'silver'
     if (vis <= 0.01) return
     g.save()
     g.globalAlpha = vis
-    const s = CHAIR_RADIUS * 0.8
-    const H = 22
-    const BH = 30
+    const s = CHAIR_RADIUS * 1.15
+    const H = 33
+    const BH = throne ? 64 : silver ? 54 : 46
     const cs = Math.cos(c.face)
     const sn = Math.sin(c.face)
-    const W = (lx, ly, z) => this.proj(c.x + lx * cs - ly * sn, c.y + lx * sn + ly * cs, z)
+    const zf = this.mirror ? -1 : 1 // reflections hang upside down below the floor
+    const W = (lx, ly, z) => this.proj(c.x + lx * cs - ly * sn, c.y + lx * sn + ly * cs, z * zf)
     const k = this.proj(c.x, c.y, H).k
-    const main = taken ? '#ffffff' : th.chair
-    const back = taken ? '#ffffff' : th.accent2
-    // contact shadow + "free chair" throb ring on the floor
-    this.flatBlob(g, c.x, c.y, s * 1.7, 0, 'rgba(0,0,0,0.55)', 'rgba(0,0,0,0)')
+    // red-painted wood: stands out on both the brown and the cream squares
+    const wood = throne ? '#d4a52a' : silver ? '#b8c2cc' : '#c62828'
+    const woodLight = throne ? '#ffe27a' : silver ? '#f2f6fa' : '#ef5350'
+    const woodDark = throne ? '#8a6414' : silver ? '#5d6873' : '#7f1414'
+    // contact shadow on the floor, plus "free chair" ring during the scramble
+    if (!this.mirror) this.flatBlob(g, c.x, c.y, s * 1.7, 0, 'rgba(0,0,0,0.5)', 'rgba(0,0,0,0)')
+    if (kind && !this.mirror && !taken) {
+      // a glow under every free special chair, so you can spot them from afar
+      const q = 0.5 + 0.5 * Math.sin(t * 4 + i)
+      const glow = throne ? '255,215,90' : '210,230,255'
+      this.flatBlob(g, c.x, c.y, s * ((throne ? 2.3 : 1.9) + 0.3 * q), 0.5, `rgba(${glow},${throne ? 0.55 : 0.45})`, `rgba(${glow},0)`)
+    }
     if (free) {
-      const q = 0.5 + 0.5 * Math.sin(t * 10 + i)
-      g.strokeStyle = `rgba(255,255,120,${0.35 + 0.4 * q})`
+      const q = 0.5 + 0.5 * Math.sin(t * 6 + i)
+      g.strokeStyle = throne ? `rgba(190,120,255,${0.65 + 0.35 * q})` : silver ? `rgba(120,200,255,${0.6 + 0.35 * q})` : `rgba(255,200,40,${0.55 + 0.35 * q})`
       g.lineWidth = 3
-      this.groundPath(g, c.x, c.y, CHAIR_RADIUS + 10 + q * 6)
+      this.groundPath(g, c.x, c.y, s * 1.45 + q * 4)
       g.stroke()
     }
-    // legs
-    g.strokeStyle = 'rgba(25,12,40,0.95)'
-    g.lineWidth = Math.max(1.5, 3.2 * k)
-    g.lineCap = 'round'
-    for (const [lx, ly] of [[-0.8, -0.8], [-0.8, 0.8], [0.8, -0.8], [0.8, 0.8]]) {
-      const a = W(lx * s, ly * s, 0)
-      const b = W(lx * s, ly * s, H - 4)
-      g.beginPath()
-      g.moveTo(a.x, a.y)
-      g.lineTo(b.x, b.y)
-      g.stroke()
-    }
-    // The backrest sits on the local -x side; draw it first if it's farther away.
     const fr = c.face + this.yaw
     const vsn = Math.sin(fr)
     const vcs = Math.cos(fr)
     const backBehind = -vsn < 0
-    const backrest = () => {
-      g.fillStyle = back
-      g.shadowColor = back
-      g.shadowBlur = 10
-      this.poly(g, [W(-s, -s, H), W(-s, s, H), W(-s, s, H + BH), W(-s, -s, H + BH)])
-      g.fill()
-      g.shadowBlur = 0
-      g.fillStyle = 'rgba(0,0,0,0.22)'
-      this.poly(g, [W(-s, -s * 0.7, H + BH * 0.25), W(-s, s * 0.7, H + BH * 0.25), W(-s, s * 0.7, H + BH * 0.75), W(-s, -s * 0.7, H + BH * 0.75)])
+    g.lineCap = 'round'
+    const leg = (lx, ly, z1, w = 3.4) => {
+      const a = W(lx, ly, 0)
+      const b = W(lx, ly, z1)
+      g.strokeStyle = woodDark
+      g.lineWidth = Math.max(1.5, w * k)
+      g.beginPath()
+      g.moveTo(a.x, a.y)
+      g.lineTo(b.x, b.y)
+      g.stroke()
+      // tiny foot shadow so it reads as standing on the floor
+      if (this.mirror) return
+      g.fillStyle = 'rgba(0,0,0,0.35)'
+      g.beginPath()
+      g.ellipse(a.x, a.y, 2.6 * k, 1.3 * k, 0, 0, TAU)
       g.fill()
     }
+    const backrest = () => {
+      const p = 0.88
+      leg(-s * p, -s * p, H + BH, 3.8)
+      leg(-s * p, s * p, H + BH, 3.8)
+      // top rail and two slats
+      for (const [z0, z1, col] of [[H + BH - 11, H + BH, woodLight], [H + 11, H + 16, wood], [H + 22, H + 27, wood]]) {
+        g.fillStyle = col
+        this.poly(g, [W(-s * p, -s * p, z0), W(-s * p, s * p, z0), W(-s * p, s * p, z1), W(-s * p, -s * p, z1)])
+        g.fill()
+        g.strokeStyle = 'rgba(40,20,8,0.5)'
+        g.lineWidth = 1
+        g.stroke()
+      }
+    }
     if (backBehind) backrest()
-    // seat slab: the side faces turned towards the camera, then the top
-    const T = 5
+    // legs (back legs are the backrest posts)
+    leg(s * 0.88, -s * 0.88, H - 3)
+    leg(s * 0.88, s * 0.88, H - 3)
+    if (!backBehind) { leg(-s * 0.88, -s * 0.88, H - 3); leg(-s * 0.88, s * 0.88, H - 3) }
+    // seat: visible edges, then the top
+    const T = 4
     const faces = [
       { a: [s, -s], b: [s, s], ny: vsn }, { a: [-s, s], b: [-s, -s], ny: -vsn },
       { a: [s, s], b: [-s, s], ny: vcs }, { a: [-s, -s], b: [s, -s], ny: -vcs },
     ]
-    g.fillStyle = taken ? '#bdb3d9' : th.accent
+    g.fillStyle = woodDark
     for (const f of faces) {
       if (f.ny <= 0) continue
       this.poly(g, [W(f.a[0], f.a[1], H), W(f.b[0], f.b[1], H), W(f.b[0], f.b[1], H - T), W(f.a[0], f.a[1], H - T)])
@@ -691,43 +600,99 @@ export class Renderer {
     }
     const top = [W(-s, -s, H), W(s, -s, H), W(s, s, H), W(-s, s, H)]
     const grad = g.createLinearGradient(top[0].x, top[0].y, top[2].x, top[2].y)
-    grad.addColorStop(0, '#ffffff')
-    grad.addColorStop(0.35, main)
-    grad.addColorStop(1, taken ? '#d9d2f2' : th.accent)
+    grad.addColorStop(0, woodLight)
+    grad.addColorStop(0.6, wood)
+    grad.addColorStop(1, throne ? '#a87b16' : silver ? '#8793a0' : '#a31f1f')
     g.fillStyle = grad
-    g.shadowColor = main
-    g.shadowBlur = 14 + pulse * 12
     this.poly(g, top)
     g.fill()
-    g.shadowBlur = 0
-    // stitched cushion
-    g.strokeStyle = 'rgba(0,0,0,0.28)'
-    g.lineWidth = 1.2
-    g.setLineDash([3, 3])
-    this.poly(g, [W(-s * 0.7, -s * 0.7, H + 0.5), W(s * 0.7, -s * 0.7, H + 0.5), W(s * 0.7, s * 0.7, H + 0.5), W(-s * 0.7, s * 0.7, H + 0.5)])
-    g.stroke()
-    g.setLineDash([])
+    if (kind) {
+      // velvet cushion: purple on a throne, royal blue on a silver chair
+      g.fillStyle = throne ? '#7b2fbf' : '#2f6fd6'
+      this.poly(g, [W(-s * 0.72, -s * 0.72, H + 1.5), W(s * 0.72, -s * 0.72, H + 1.5), W(s * 0.72, s * 0.72, H + 1.5), W(-s * 0.72, s * 0.72, H + 1.5)])
+      g.fill()
+    }
+    // wood grain
+    g.strokeStyle = silver ? 'rgba(40,50,60,0.2)' : 'rgba(90,10,10,0.25)'
+    g.lineWidth = 1
+    for (const f of [-0.5, 0, 0.5]) {
+      const a = W(-s * 0.9, s * f, H + 0.3)
+      const b = W(s * 0.9, s * f + 1.5, H + 0.3)
+      g.beginPath()
+      g.moveTo(a.x, a.y)
+      g.lineTo(b.x, b.y)
+      g.stroke()
+    }
     if (!backBehind) backrest()
+    if (throne) {
+      // the crown on top of the back
+      const cp = W(-s * 0.88, 0, H + BH + 2)
+      const ck = cp.k
+      const cw = 16 * ck
+      const chh = 13 * ck
+      g.fillStyle = '#ffd54a'
+      g.strokeStyle = '#7a5208'
+      g.lineWidth = Math.max(1, 1.2 * ck)
+      g.beginPath()
+      g.moveTo(cp.x - cw, cp.y)
+      g.lineTo(cp.x - cw, cp.y - chh)
+      g.lineTo(cp.x - cw * 0.5, cp.y - chh * 0.45)
+      g.lineTo(cp.x, cp.y - chh * 1.15)
+      g.lineTo(cp.x + cw * 0.5, cp.y - chh * 0.45)
+      g.lineTo(cp.x + cw, cp.y - chh)
+      g.lineTo(cp.x + cw, cp.y)
+      g.closePath()
+      g.fill()
+      g.stroke()
+      g.fillStyle = '#e0245e'
+      g.beginPath()
+      g.arc(cp.x, cp.y - chh * 0.35, 2.4 * ck, 0, TAU)
+      g.fill()
+      if (!this.mirror && !taken) {
+        // sparkle
+        const q = (t * 1.3 + i * 0.37) % 1
+        g.globalAlpha = vis * Math.sin(q * Math.PI)
+        g.fillStyle = '#fffbe0'
+        const sx = cp.x + (q - 0.5) * cw * 2
+        const sy = cp.y - chh * 1.4
+        g.beginPath()
+        g.moveTo(sx, sy - 5 * ck); g.lineTo(sx + 1.4 * ck, sy); g.lineTo(sx, sy + 5 * ck); g.lineTo(sx - 1.4 * ck, sy)
+        g.closePath()
+        g.fill()
+      }
+    }
     g.restore()
   }
 
-  // --- Players (upright billboards standing on the floor) --------------------------------
+  // --- Players: real people standing on the floor ---------------------------------
 
   players(scene, client, t, pulse, phase, phaseAge) {
     const pos = client.positions()
     const me = client.me
     this.lastPos = pos
+    const dt = Math.max(1 / 240, Math.min(0.1, t - (this.lastPlayersT ?? t - 1 / 60)))
+    this.lastPlayersT = t
     for (const [id, p] of pos) {
       const info = client.roster.get(id)
       if (!info) continue
       let { x, y } = p
+      // Walk cycle from how fast this person is actually moving.
+      let gt = this.gait.get(id)
+      if (!gt) { gt = { x, y, ph: hash(id) * TAU, speed: 0, vx: 0 }; this.gait.set(id, gt) }
+      const step = Math.hypot(x - gt.x, y - gt.y)
+      const speed = step > 200 ? 0 : step / dt
+      gt.speed += (speed - gt.speed) * Math.min(1, dt * 10)
+      gt.vx += (((x - gt.x) / dt) - gt.vx) * Math.min(1, dt * 8)
+      gt.ph += Math.min(step, 40) / 11
+      gt.x = x
+      gt.y = y
       let z = 0
       let scale = 1
       let rot = 0
       let alpha = 1
       let boot = null
       if (p.mode === 'booted' && phase === 'result') {
-        // Kicked off the stage: launched outward and up, spinning.
+        // Kicked off the board: launched outward and up, spinning.
         const e = phaseAge
         const d = Math.hypot(x, y) || 1
         const ux = x / d
@@ -736,96 +701,110 @@ export class Renderer {
         x += ux * fly * 900
         y += uy * fly * 900
         z = Math.sin(Math.min(fly, 1) * Math.PI) * 220 + fly * 60
-        rot = fly * 14
+        rot = fly * 10
         scale = Math.max(0.3, 1 - fly * 0.4)
         alpha = Math.max(0, 1 - fly * 0.7)
         if (e < 0.6) boot = { e, ux, uy, px: p.x, py: p.y }
         if (alpha <= 0) continue
       }
-      const seed = hash(id)
-      const dancing = p.mode === 'dance' || p.mode === 'idle'
-      if (dancing) {
-        z += Math.abs(Math.sin(t * 7 + seed * 20)) * 8 + pulse * 6
-        scale *= 1 + pulse * 0.08
-        rot = Math.sin(t * 3.5 + seed * 10) * 0.18
+      const seated = p.mode === 'seated'
+      const champ = p.mode === 'champ'
+      const dancing = (phase === 'music' || phase === 'levelup') && (p.mode === 'dance' || p.mode === 'idle')
+      if (champ) scale *= 2.2
+      const stride = seated || champ ? 0 : Math.min(1, gt.speed / 160)
+      const pose = {
+        walk: gt.ph,
+        stride,
+        seated,
+        arms: champ ? 'up' : dancing ? 'dance' : 'swing',
+        beat: t * 4 + hash(id) * 6,
+        lean: seated ? 0 : Math.max(-1, Math.min(1, gt.vx / 300)),
       }
-      if (p.mode === 'seated') { scale *= 0.92; z += 24 }
-      if (p.mode === 'champ') { scale *= 2.6 + pulse * 0.15; z += 10 + Math.sin(t * 3) * 6 }
-      const r = PLAYER_RADIUS * scale
-      const depthY = p.mode === 'seated' ? y + 0.5 : y
-      scene.push({ x, y: depthY, draw: (g) => {
+      const depthY = seated ? y + 0.5 : y
+      const reflect = z > 2 ? null : (g) => {
+        const foot = this.proj(x, y, 0)
+        const head = this.proj(x, y, PERSON_HEIGHT * scale)
+        g.globalAlpha = alpha
+        g.translate(foot.x, foot.y)
+        g.scale(1, -1)
+        drawPerson(g, info.avatar, 0, 0, Math.max(6, foot.y - head.y), pose)
+      }
+      scene.push({ x, y: depthY, reflect, draw: (g) => {
         g.save()
         g.globalAlpha = alpha
         if (boot) {
-          const k = boot.e < 0.35 ? Math.sin((boot.e / 0.35) * Math.PI) * 18 : 0
-          const bp = this.proj(boot.px - boot.ux * (46 - k), boot.py - boot.uy * (46 - k), 20)
+          const kk = boot.e < 0.35 ? Math.sin((boot.e / 0.35) * Math.PI) * 18 : 0
+          const bp = this.proj(boot.px - boot.ux * (46 - kk), boot.py - boot.uy * (46 - kk), 20)
           g.font = `${Math.round(44 * bp.k)}px "Apple Color Emoji","Segoe UI Emoji",sans-serif`
           g.textAlign = 'center'
           g.textBaseline = 'middle'
           g.fillText('🥾', bp.x, bp.y)
         }
-        // shadow on the floor (shrinks as you jump)
-        const sa = Math.max(0.1, 0.5 - z / 400)
-        this.flatBlob(g, x, y, r * 1.1, 0, `rgba(0,0,0,${sa})`, 'rgba(0,0,0,0)')
-        const C = this.proj(x, y, z + r + 4)
-        const R = r * C.k
-        g.translate(C.x, C.y)
-        g.rotate(rot)
-        g.shadowColor = info.color
-        g.shadowBlur = 18
-        g.fillStyle = info.color
-        g.beginPath()
-        g.arc(0, 0, R + 3.5 * C.k, 0, TAU)
-        g.fill()
-        g.shadowBlur = 0
-        g.drawImage(avatarCanvas(info.avatar, 96), -R, -R, R * 2, R * 2)
-        // a little specular highlight sells the "ball" look
-        const hl = g.createRadialGradient(-R * 0.35, -R * 0.45, 0, -R * 0.35, -R * 0.45, R * 0.9)
-        hl.addColorStop(0, 'rgba(255,255,255,0.35)')
-        hl.addColorStop(1, 'rgba(255,255,255,0)')
-        g.fillStyle = hl
-        g.beginPath()
-        g.arc(0, 0, R, 0, TAU)
-        g.fill()
-        if (id === me) {
-          g.strokeStyle = '#ffffff'
-          g.lineWidth = 3
-          g.setLineDash([6, 5])
-          g.lineDashOffset = t * 30
-          g.beginPath()
-          g.arc(0, 0, R + 9 * C.k, 0, TAU)
-          g.stroke()
-          g.setLineDash([])
+        // shadow + a ring in the player's colour on the floor under their feet
+        if (!seated) {
+          const sa = Math.max(0.1, 0.45 - z / 400)
+          this.flatBlob(g, x, y, PLAYER_RADIUS * 1.5 * scale, 0, `rgba(0,0,0,${sa})`, 'rgba(0,0,0,0)')
+          if (z < 5) {
+            g.strokeStyle = info.color
+            g.lineWidth = 3
+            this.groundPath(g, x, y, PLAYER_RADIUS * 1.25 * scale)
+            g.stroke()
+          }
+          if (id === me && phase !== 'lobby' && z < 5) {
+            g.strokeStyle = '#ffffff'
+            g.lineWidth = 2
+            g.setLineDash([6, 5])
+            g.lineDashOffset = t * 20
+            this.groundPath(g, x, y, PLAYER_RADIUS * 1.7 * scale)
+            g.stroke()
+            g.setLineDash([])
+          }
         }
-        g.rotate(-rot)
-        // name tag
-        const fs = Math.max(9, Math.round(12 * C.k))
+        const foot = this.proj(x, y, z)
+        const head = this.proj(x, y, z + PERSON_HEIGHT * scale)
+        const hpx = Math.max(6, foot.y - head.y)
+        if (rot) {
+          const cy = (foot.y + head.y) / 2
+          g.translate(foot.x, cy)
+          g.rotate(rot)
+          g.translate(-foot.x, -cy)
+        }
+        drawPerson(g, info.avatar, foot.x, foot.y, hpx, pose)
+        if (rot) g.setTransform(this.dpr, 0, 0, this.dpr, 0, 0)
+        // name tag over the head
+        const topY = foot.y - hpx * (seated ? 0.78 : 1.02)
+        const fs = Math.max(9, Math.round(12 * Math.min(1.4, foot.k)))
         g.font = `700 ${fs}px Outfit, system-ui, sans-serif`
         g.textAlign = 'center'
         g.textBaseline = 'middle'
         const label = id === me ? `${info.name} (you)` : info.name
         const tw = g.measureText(label).width + 12
         g.fillStyle = 'rgba(8,0,20,0.72)'
-        roundRect(g, -tw / 2, R + 6, tw, fs + 5, 8)
+        roundRect(g, foot.x - tw / 2, topY - fs - 7, tw, fs + 5, 8)
         g.fill()
-        g.fillStyle = id === me ? '#ffffff' : '#f2e6ff'
-        g.fillText(label, 0, R + 6 + (fs + 5) / 2)
-        if (id === me && p.mode !== 'seated' && phase !== 'lobby') {
+        g.fillStyle = info.color
+        g.fillRect(foot.x - tw / 2 + 4, topY - 4, tw - 8, 2)
+        g.fillStyle = '#ffffff'
+        g.fillText(label, foot.x, topY - fs / 2 - 4.5)
+        if (id === me && !seated && !champ && phase !== 'lobby') {
           g.fillStyle = '#ffe600'
           g.font = '800 13px Outfit, system-ui, sans-serif'
-          g.fillText('▼ YOU', 0, -R - 16 + Math.sin(t * 6) * 3)
+          g.fillText('▼ YOU', foot.x, topY - fs - 18 + Math.sin(t * 4) * 2)
         }
         if (p.mode === 'booted' && phase === 'result' && phaseAge < 2.2) {
           g.font = '900 20px Bungee, Impact, sans-serif'
           g.fillStyle = '#ff3c5a'
-          g.fillText('BOOTED!', 0, -R - 22)
+          g.fillText('BOOTED!', foot.x, topY - fs - 22)
         }
-        if (p.mode === 'champ') {
-          g.font = `${Math.round(30 * C.k)}px "Apple Color Emoji","Segoe UI Emoji",sans-serif`
-          g.fillText('👑', 0, -R - 14 * C.k + Math.sin(t * 4) * 6)
+        if (champ) {
+          g.font = `${Math.round(hpx * 0.18)}px "Apple Color Emoji","Segoe UI Emoji",sans-serif`
+          g.fillText('👑', foot.x, topY - fs - 10 - hpx * 0.08 + Math.sin(t * 3) * 3)
         }
         g.restore()
       } })
+    }
+    if (this.gait.size > pos.size * 2 + 20) {
+      for (const id of this.gait.keys()) if (!pos.has(id)) this.gait.delete(id)
     }
   }
 
@@ -835,20 +814,76 @@ export class Renderer {
       const p = pos?.get(rc.id)
       if (!p) continue
       const u = rc.age / 1.8
-      const P = this.proj(p.x + rc.dx * u, p.y, 60 + u * 80)
+      const P = this.proj(p.x + rc.dx * u, p.y, PERSON_HEIGHT + 30 + u * 80)
       g.globalAlpha = Math.max(0, 1 - u)
       g.font = `${Math.round(28 * Math.min(1.6, P.k))}px "Apple Color Emoji","Segoe UI Emoji",sans-serif`
       g.textAlign = 'center'
       g.fillText(rc.e, P.x, P.y)
       g.globalAlpha = 1
     }
-    const tgt = client.targetPoint?.()
-    if (tgt && phase === 'scramble') {
-      g.strokeStyle = 'rgba(255,255,255,0.75)'
-      g.lineWidth = 2
-      this.groundPath(g, tgt.x, tgt.y, 10 + Math.sin(t * 10) * 3)
+    this.drawPops(g, pos)
+    if (phase !== 'scramble') { this.fx = []; return }
+    // Click feedback: a ripple where you clicked on the floor, and a marker
+    // on the spot you're running to.
+    this.fx = (this.fx || []).filter((f) => (f.age += 1 / 60) < 0.6)
+    for (const f of this.fx) {
+      const u = f.age / 0.6
+      g.strokeStyle = `rgba(255,255,255,${0.9 * (1 - u)})`
+      g.lineWidth = 4 * (1 - u) + 1
+      this.groundPath(g, f.x, f.y, 12 + u * 50)
       g.stroke()
     }
+    const target = client.input?.target
+    if (!target || target.chair != null || !client.self) return
+    g.strokeStyle = 'rgba(255,255,255,0.8)'
+    g.lineWidth = 2
+    this.groundPath(g, target.x, target.y, 12 + Math.sin(t * 10) * 3)
+    g.stroke()
+  }
+
+  drawPops(g, pos) {
+    if (!this.pops?.length) return
+    this.pops = this.pops.filter((p) => (p.age += 1 / 60) < 2.2)
+    for (const p of this.pops) {
+      const at = pos?.get(p.id)
+      if (!at) continue
+      const u = p.age / 2.2
+      const P = this.proj(at.x, at.y, PERSON_HEIGHT + 40 + u * 90)
+      const pop = Math.min(1, p.age / 0.15)
+      const size = Math.round((p.big ? 30 : 18) * (0.6 + 0.4 * pop))
+      g.save()
+      g.globalAlpha = Math.min(1, (1 - u) * 2.5)
+      g.font = `900 ${size}px Bungee, Impact, sans-serif`
+      g.textAlign = 'center'
+      g.textBaseline = 'middle'
+      g.lineWidth = p.big ? 6 : 4
+      g.strokeStyle = 'rgba(20,10,40,0.85)'
+      g.strokeText(p.text, P.x, P.y)
+      g.fillStyle = p.color
+      g.fillText(p.text, P.x, P.y)
+      g.restore()
+    }
+  }
+
+  spotFx(p) { (this.fx ||= []).push({ x: p.x, y: p.y, age: 0 }) }
+
+  // Which free chair is under this screen point? Tests the chair's whole
+  // picture (it stands up off the floor), nearest first. -1 if none.
+  pickChair(sx, sy, client, slack = 1.25) {
+    const owners = client.state?.owners || []
+    const pts = client.chairPoints()
+    let best = -1
+    let bd = Infinity
+    pts.forEach((c, i) => {
+      if (owners[i]) return
+      for (const z of [8, 30, 55]) {
+        const P = this.proj(c.x, c.y, z)
+        const rad = CHAIR_RADIUS * 1.5 * P.k * slack
+        const d = Math.hypot(sx - P.x, sy - P.y) / rad
+        if (d < 1 && d < bd) { bd = d; best = i }
+      }
+    })
+    return best
   }
 
   // --- Hazards -----------------------------------------------------------------------------

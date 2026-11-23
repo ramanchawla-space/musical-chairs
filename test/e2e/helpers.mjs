@@ -93,12 +93,13 @@ async function nearestChairScreen(page) {
     const owners = client.state.owners
     const speed = 300
     let best = null
+    let bi = -1
     for (let ms = 0; ms <= 4000 && !best; ms += 50) {
       const pts = client.chairPoints(now + ms)
       for (let i = 0; i < pts.length; i++) {
         if (owners[i]) continue
         const d = Math.hypot(pts[i].x - me.x, pts[i].y - me.y)
-        if (d <= (speed * ms) / 1000 * 0.85 + 20) { best = pts[i]; break }
+        if (d <= (speed * ms) / 1000 * 0.85 + 20) { best = pts[i]; bi = i; break }
       }
     }
     if (!best) {
@@ -107,11 +108,14 @@ async function nearestChairScreen(page) {
       pts.forEach((c, i) => {
         if (owners[i]) return
         const d = Math.hypot(c.x - me.x, c.y - me.y)
-        if (d < bd) { bd = d; best = c }
+        if (d < bd) { bd = d; best = c; bi = i }
       })
     }
     if (!best) return null
-    const s = renderer.toScreen(best.x, best.y)
+    // A person clicks the chair itself (its seat, where they see it now),
+    // which grabs it on the spot.
+    const cur = client.chairPoints(now)[bi]
+    const s = renderer.toScreen(cur.x, cur.y, 30)
     // keys steer relative to the (possibly spinning) camera
     const wx = best.x - me.x
     const wy = best.y - me.y
@@ -134,8 +138,13 @@ export async function scrambleForChair(page, how = 'click') {
         return st.seat >= 0
       }
       const c = await nearestChairScreen(page)
+      // the state may have landed between the two reads: did I just sit?
+      if (!c && await page.evaluate(() => window.__mc.client.state.owners.includes(window.__mc.client.me))) return true
       if (!c) { console.log(`    ! ${page.tag} sees no free chair: ${await page.evaluate(() => JSON.stringify({ owners: window.__mc.client.state.owners, me: window.__mc.client.me, self: window.__mc.client.self }))}`); return false }
-      if (how === 'click') await page.mouse.click(c.sx, c.sy)
+      if (how === 'click') {
+        await page.mouse.click(c.sx, c.sy)
+        if (await page.evaluate(() => window.__mc.client.pendingSit >= 0 || window.__mc.client.status()?.seat >= 0)) page.lockSeen = true
+      }
       else if (how === 'tap') await page.touchscreen.tap(c.sx, c.sy)
       else {
         const want = new Set()

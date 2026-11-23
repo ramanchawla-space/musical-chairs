@@ -4,7 +4,7 @@
 // this player's own movement so steering has zero network latency.
 
 import {
-  chairLayout, layoutRadius, choreography, dancePos, chairsAtTime, clampToArena,
+  chairLayout, chairPosAt, layoutRadius, choreography, dancePos, chairsAtTime, clampToArena,
   arenaFor, roundHazards, bouncers, BOUNCER_RADIUS, MOVE_SPEED, SIT_DISTANCE, CHAIR_RADIUS, PLAYER_RADIUS, patternPos,
 } from './core.js'
 import { PING_MS } from './net.js'
@@ -111,7 +111,7 @@ export class GameClient {
     if (r && (!this.round || this.round.seed !== r.seed)) {
       const chairs = chairLayout(r.layout, r.m, r.seed)
       const R = layoutRadius(chairs)
-      this.round = { ...r, chairs, R, arena: arenaFor(R, r.order.length), segs: choreography(r.seed), hazards: roundHazards(r.seed, r.m, r.no, r.start) }
+      this.round = { ...r, chairs, R, arena: arenaFor(R, r.order.length), segs: choreography(r.seed), hazards: roundHazards(r.seed, r.level) }
       this.self = null
       this.snaps.clear()
       this.pendingSit = -1
@@ -153,7 +153,14 @@ export class GameClient {
     if (!t) return null
     if (t.chair != null) {
       if (this.state?.owners?.[t.chair]) return null
-      return chairs[t.chair] || null
+      const c = chairs[t.chair]
+      if (!c) return null
+      // Aim where the chair is about to be, not where it is: you cut it off
+      // instead of trailing behind it.
+      const me = this.self
+      if (!me || !this.round) return c
+      const lead = Math.min(700, (Math.hypot(c.x - me.x, c.y - me.y) / MOVE_SPEED) * 1000 * 0.9)
+      return chairPosAt(this.round, t.chair, this.hostNow() + lead)
     }
     return t
   }
@@ -171,6 +178,8 @@ export class GameClient {
     const p = this.dancePoint(this.me, this.danceTau()) || { x: 0, y: 0 }
     this.self = { x: p.x, y: p.y, vx: 0, vy: 0 }
     this.pendingSit = -1
+    // Nothing chosen during the music carries over: every chase starts at the stop.
+    this.input.target = null
     this.sendPos(true)
   }
 
@@ -190,6 +199,17 @@ export class GameClient {
         const p = patternPos('breathe', k, ids.length, tau * 0.35, 120 + ids.length * 6, 1)
         out.set(id, { x: p.x, y: p.y, mode: 'idle' })
       })
+      return out
+    }
+    if (phase === 'levelup') {
+      // Between levels: everybody is back on the floor, the level winner in the middle.
+      const ids = [...this.roster.values()].filter((p) => !p.spectator && s.status[p.id] && p.id !== s.levelChamp).map((p) => p.id)
+      const tau = hostT / 1000
+      ids.forEach((id, k) => {
+        const p = patternPos('orbit', k, ids.length, tau * 0.5, 120 + ids.length * 7, 1)
+        out.set(id, { x: p.x, y: p.y, mode: 'dance' })
+      })
+      if (s.levelChamp) out.set(s.levelChamp, { x: 0, y: 0, mode: 'champ' })
       return out
     }
     if (phase === 'winner') {
@@ -351,7 +371,26 @@ export class GameClient {
 
   // Tap / click a spot (or a chair) to run there.
   setTarget(p) {
+    if (this.state?.phase !== 'scramble' || !this.self) return false
     this.input.target = p
+    return true
+  }
+
+  // Clicked / tapped a free chair: claim it and sit straight away (the host
+  // decides if someone else got there first).
+  grab(i) {
+    if (this.state?.phase !== 'scramble' || !this.self) return false
+    if (this.state.owners[i] || (this.pendingSit >= 0 && Date.now() - this.pendingAt < 400)) return false
+    this.pendingSit = i
+    this.pendingAt = Date.now()
+    this.input.target = null
+    this.send({ t: 'grab', chair: i, at: this.hostNow() })
+    return true
+  }
+
+  // Out players: guess who goes out next.
+  pick(id) {
+    this.send({ t: 'pick', id })
   }
 
   react(e) {

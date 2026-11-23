@@ -30,8 +30,8 @@ try {
   await p1.evaluate(() => { window.__mc.client.update = () => {} }) // P1 stands still this time
   await waitPhase(host, 'scramble', 40000)
   await scrambleForChair(host, 'click')
-  await waitPhase(p1, 'winner', 20000)
-  const champ = await p1.evaluate(() => window.__mc.client.state.champion)
+  await waitPhase(p1, 'levelup', 20000)
+  const champ = await p1.evaluate(() => window.__mc.client.state.levelChamp)
   assert(champ === (await host.evaluate(() => window.__mc.client.me)), 'host wins; everyone agrees over the cloud')
 } catch (e) {
   failed = true

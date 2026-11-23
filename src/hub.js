@@ -7,7 +7,8 @@
 // loopback for the host's own player, and over fakes in unit tests.
 
 import {
-  buildRound, chairPosAt, chairCount, SIT_DISTANCE, MOTIONS, PLAYER_COLORS, THEMES, MODES, LAYOUT_MODES,
+  buildRound, chairPosAt, chairCount, SIT_DISTANCE, MOTIONS, PLAYER_COLORS, THEMES, MODES, LAYOUT_MODES, TOTAL_LEVELS, seatSlot, TRACK_COUNT, POINTS, sitPoints, streakBonus, scrambleWindow,
+  specialChairs, bonusTiles, chairKind, tileKind, chairBonus,
 } from './core.js'
 
 export const DEFAULT_TIMING = {
@@ -15,6 +16,7 @@ export const DEFAULT_TIMING = {
   scrambleMax: 12000, // after the music stops, how long people get to sit
   settle: 900,        // pause after the last chair fills, so everyone sees it
   result: 4800,       // "BOOTED!" screen between rounds
+  levelup: 7000,      // level results, then everyone is back in for the next level
   manualMax: 90000,   // DJ mode safety net: auto-stop if the DJ forgets
   snapHz: 15,
 }
@@ -40,6 +42,8 @@ export class Hub {
     this.owners = []
     this.booted = []
     this.champion = null
+    this.level = 0
+    this.levelChamp = null
     this.notice = ''
     this.timer = null
     this.snapTimer = null
@@ -79,6 +83,13 @@ export class Hub {
       case 'sit':
         this.onSit(p, msg)
         break
+      case 'grab':
+        // clicked / tapped the chair itself: sit on it right away
+        this.onSit(p, msg, true)
+        break
+      case 'pick':
+        this.onPick(p, msg)
+        break
       case 'react':
         if (typeof msg.e === 'string' && msg.e.length <= 8) this.broadcast({ t: 'react', id: p.id, e: msg.e })
         break
@@ -111,6 +122,7 @@ export class Hub {
         alive: !inGame && !spectator, waiting: inGame && !spectator,
         seat: -1, x: 0, y: 0, outRound: 0, wins: 0,
       }
+      this.resetScore(p)
       this.players.set(cid, p)
     }
     c.send({ t: 'welcome', you: cid, host: connId === this.hostConn })
@@ -136,6 +148,7 @@ export class Hub {
       case 'start': return this.startGame()
       case 'stop': return this.stopMusic()
       case 'lobby': return this.toLobby()
+      case 'end': return this.endGame()
       case 'kick': {
         const p = this.players.get(msg.id)
         if (!p || msg.id === this.players.get(this.conns.get(this.hostConn)?.cid)?.id) return
@@ -164,19 +177,47 @@ export class Hub {
       return false
     }
     for (const p of this.players.values()) {
+      this.resetScore(p)
+      p.wins = 0
+    }
+    // Drop ghosts left over from the previous game.
+    for (const [id, p] of [...this.players]) if (!p.connected) this.players.delete(id)
+    this.champion = null
+    this.broadcastRoster()
+    this.startLevel(1)
+    return true
+  }
+
+  // A new level: everyone still connected is back on the floor, whether they
+  // were booted last level or joined mid-game. Points carry over.
+  startLevel(level) {
+    this.level = level
+    this.levelChamp = null
+    this.booted = []
+    for (const p of this.players.values()) {
       const plays = !p.spectator && p.connected
       p.alive = plays
       p.waiting = false
       p.seat = -1
       p.outRound = 0
+      p.streak = 0
     }
-    // Drop ghosts left over from the previous game.
-    for (const [id, p] of [...this.players]) if (!p.connected) this.players.delete(id)
-    this.champion = null
-    this.booted = []
-    this.broadcastRoster()
-    this.startCount = this.alive().length // difficulty ramps from here to the final
+    this.startCount = this.alive().length // difficulty ramps from here to the level's final
+    if (this.startCount < 2) return this.endGame()
     this.startRound(1)
+  }
+
+  // The host can end the game at any moment; so does finishing level 5.
+  // Everyone keeps what they've scored and the most points wins.
+  endGame() {
+    if (this.phase === 'lobby' || this.phase === 'winner') return false
+    this.stopSnaps()
+    this.clearTimeout(this.timer)
+    const ranked = [...this.players.values()].filter((p) => !p.spectator)
+      .sort((a, b) => b.pts - a.pts || b.wins - a.wins || (a.bestSit ?? 1e9) - (b.bestSit ?? 1e9))
+    this.champion = ranked[0]?.id || null
+    this.phase = 'winner'
+    this.broadcastState()
     return true
   }
 
@@ -187,6 +228,8 @@ export class Hub {
     this.round = null
     this.owners = []
     this.booted = []
+    this.level = 0
+    this.levelChamp = null
     for (const [id, p] of [...this.players]) {
       if (!p.connected) { this.players.delete(id); continue }
       p.alive = !p.spectator
@@ -207,6 +250,11 @@ export class Hub {
     const aliveIds = this.alive().map((p) => p.id).sort()
     const seed = Math.floor(this.random() * 2 ** 31)
     const r = buildRound(seed, no, aliveIds, this.settings.mode, this.settings.layout, this.startCount)
+    // A different song every round: never the one that just played.
+    if (Number.isFinite(this.lastTrack)) {
+      r.track = (this.lastTrack % TRACK_COUNT) + 1 + Math.floor(this.random() * (TRACK_COUNT - 1))
+    }
+    this.lastTrack = r.track
     const t = this.now()
     this.round = {
       ...r,
@@ -217,9 +265,15 @@ export class Hub {
       scrambleEnd: null,
       mode: this.settings.mode,
       motion: this.settings.motion,
+      level: this.level,
+      seats: new Array(r.chairs.length).fill(null), // [claimTime, tableSlot] once taken
+      ...specialChairs(seed, r.chairs.length), // thrones, silvers
+      ...bonusTiles(seed), // gold, silver
     }
     this.owners = new Array(r.chairs.length).fill(null)
     for (const p of this.alive()) p.seat = -1
+    for (const p of this.players.values()) { p.gain = 0; p.sitMs = null; p.pick = null; p.pred = null; p.bonus = null }
+    this.round.fastest = null
     this.booted = []
     this.phase = 'intro'
     this.broadcastState()
@@ -237,15 +291,16 @@ export class Hub {
     if (this.phase !== 'music') return false
     const r = this.round
     r.stopAt = this.now()
-    r.scrambleEnd = r.stopAt + this.timing.scrambleMax
+    const window = scrambleWindow(r, this.timing.scrambleMax)
+    r.scrambleEnd = r.stopAt + window
     this.phase = 'scramble'
     this.broadcastState()
     this.startSnaps()
-    this.schedule(this.timing.scrambleMax, () => this.endRound(true))
+    this.schedule(window, () => this.endRound(true))
     return true
   }
 
-  onSit(p, msg) {
+  onSit(p, msg, grab = false) {
     if (this.phase !== 'scramble' || !p.alive || p.seat >= 0) return
     const i = msg.chair | 0
     const r = this.round
@@ -260,16 +315,51 @@ export class Hub {
     // Loose anti-teleport check; positions are client-reported.
     const x = Number.isFinite(msg.x) ? msg.x : p.x
     const y = Number.isFinite(msg.y) ? msg.y : p.y
-    if (Math.hypot(chair.x - x, chair.y - y) > SIT_DISTANCE + 40) {
+    if (!grab && Math.hypot(chair.x - x, chair.y - y) > SIT_DISTANCE + 40) {
       this.sendTo(p, { t: 'sitDenied', chair: i })
       return
     }
+    // Points: the quicker you sit after the stop, the more you score.
+    const order = r.seats.filter(Boolean).length
+    const secs = Math.max(0, (at - r.stopAt) / 1000)
+    // Special chairs and tiles: judged where the chair was at the moment of the claim.
+    const ck = chairKind(r, i)
+    const tk = tileKind(chair, r)
+    const bonus = chairBonus(ck, tk)
+    const pts = sitPoints(secs, order) + bonus.pts
+    p.bonus = bonus.kind
+    if (ck === 'throne') p.thrones++
+    if (ck === 'silver') p.silvers++
+    if (tk) p.tiles++
+    if (bonus.kind === 'jackpot') p.jackpots++
+    p.pts += pts
+    p.gain += pts
+    p.sitMs = Math.round(secs * 1000)
+    if (p.bestSit == null || p.sitMs < p.bestSit) p.bestSit = p.sitMs
+    if (order === 0) r.fastest = { id: p.id, ms: p.sitMs }
     this.owners[i] = p.id
     p.seat = i
-    p.x = chair.x
-    p.y = chair.y
+    // The chair stops roaming and takes its sitter to the next seat at the table.
+    r.seats[i] = [at, r.seats.filter(Boolean).length]
+    const seatPos = seatSlot(r, r.seats[i][1])
+    p.x = seatPos.x
+    p.y = seatPos.y
     this.broadcastState()
     this.checkScrambleDone()
+  }
+
+  resetScore(p) {
+    Object.assign(p, { pts: 0, gain: 0, streak: 0, sitMs: null, bestSit: null, bestStreak: 0, predHits: 0, pick: null, pred: null, bonus: null, thrones: 0, silvers: 0, tiles: 0, jackpots: 0 })
+  }
+
+  // Out (or waiting) players guess who'll be booted this round, until the music stops.
+  onPick(p, msg) {
+    if (this.phase !== 'intro' && this.phase !== 'music') return
+    if (p.alive || p.spectator) return
+    const target = this.players.get(msg.id)
+    if (!target || !target.alive || target.id === p.id) return
+    p.pick = target.id
+    this.broadcastState()
   }
 
   checkScrambleDone() {
@@ -297,17 +387,42 @@ export class Hub {
         const p = this.players.get(id)
         p.alive = false
         p.outRound = this.round.no
+        p.streak = 0
+      }
+      // survivors build a streak
+      for (const p of seated) {
+        p.streak++
+        p.bestStreak = Math.max(p.bestStreak, p.streak)
+        const bonus = streakBonus(p.streak)
+        p.pts += bonus
+        p.gain += bonus
+      }
+      // out players who called it
+      for (const p of this.players.values()) {
+        if (!p.pick) continue
+        if (this.booted.includes(p.pick)) {
+          p.pred = 'hit'
+          p.predHits++
+          p.pts += POINTS.predict
+          p.gain += POINTS.predict
+        } else p.pred = 'miss'
       }
       this.notice = timedOut && this.booted.length ? 'Time up!' : ''
     }
     const left = this.alive()
     this.phase = 'result'
     if (left.length <= 1) {
-      // Show the final boot, then crown the champion.
-      this.champion = left[0]?.id || seated[0]?.id || null
+      // Show the final boot; the level's last one standing gets a bonus.
+      this.levelChamp = left[0]?.id || seated[0]?.id || null
+      const champ = this.players.get(this.levelChamp)
+      if (champ) {
+        champ.wins++
+        champ.pts += POINTS.levelWin
+        champ.gain += POINTS.levelWin
+      }
       this.broadcastState()
       this.notice = ''
-      this.schedule(this.timing.result, () => this.crown())
+      this.schedule(this.timing.result, () => this.finishLevel())
       return
     }
     this.broadcastState()
@@ -316,11 +431,14 @@ export class Hub {
     this.schedule(this.timing.result, () => this.startRound(next))
   }
 
-  crown() {
-    const champ = this.players.get(this.champion)
-    if (champ) champ.wins++
-    this.phase = 'winner'
+  // Level over: after level 5 the game ends; otherwise a short break, then
+  // everybody is back in for the next level.
+  finishLevel() {
+    if (this.phase !== 'result') return
+    if (this.level >= TOTAL_LEVELS) return this.endGame()
+    this.phase = 'levelup'
     this.broadcastState()
+    this.schedule(this.timing.levelup, () => this.startLevel(this.level + 1))
   }
 
   schedule(ms, fn) {
@@ -369,6 +487,9 @@ export class Hub {
       status[p.id] = {
         alive: p.alive, seat: p.seat, waiting: p.waiting, out: p.outRound,
         on: p.connected, wins: p.wins, x: Math.round(p.x), y: Math.round(p.y),
+        pts: p.pts, gain: p.gain, streak: p.streak, sitMs: p.sitMs, pick: p.pick, pred: p.pred,
+        bestSit: p.bestSit, bestStreak: p.bestStreak, predHits: p.predHits,
+        bonus: p.bonus, thrones: p.thrones, silvers: p.silvers, tiles: p.tiles, jackpots: p.jackpots,
       }
     }
     return {
@@ -379,12 +500,16 @@ export class Hub {
       round: r && {
         no: r.no, seed: r.seed, layout: r.layout, m: r.chairs.length, order: r.order,
         musicAt: r.musicAt, introAt: r.introAt, stopAt: r.stopAt, scrambleEnd: r.scrambleEnd,
-        track: r.track, mode: r.mode, motion: r.motion, start: r.start,
+        track: r.track, mode: r.mode, motion: r.motion, start: r.start, level: r.level, seats: r.seats, fastest: r.fastest,
+        thrones: r.thrones, silvers: r.silvers, gold: r.gold, silver: r.silver,
       },
       owners: this.owners.slice(),
       status,
       booted: this.booted.slice(),
       champion: this.champion,
+      level: this.level,
+      levels: TOTAL_LEVELS,
+      levelChamp: this.levelChamp,
       notice: this.notice,
       nextChairs: chairCount(this.alive().length, this.settings.mode),
     }

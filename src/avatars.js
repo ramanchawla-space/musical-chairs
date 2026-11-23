@@ -1,63 +1,34 @@
-// Avatars: a gallery of emoji characters on neon gradients, or the player's
-// own photo (downscaled to a ~100px JPEG so it travels cheaply over WebRTC).
+// Avatars: each player picks a man or a woman (8 looks each), and can put
+// their own photo on the face (downscaled to a ~100px JPEG so it travels
+// cheaply over WebRTC). Key format: 'm3', 'w5', or 'w5|data:image/jpeg...'.
 
-export const PRESETS = [
-  ['🦄', '#ff3cac', '#784ba0'], ['🐯', '#ff8a00', '#e52e71'], ['🐼', '#43e97b', '#38f9d7'],
-  ['🦊', '#f7971e', '#ffd200'], ['🐸', '#56ab2f', '#a8e063'], ['🐙', '#ee0979', '#ff6a00'],
-  ['🦁', '#f12711', '#f5af19'], ['🐨', '#8e9eab', '#5f72bd'], ['🐵', '#c79081', '#dfa579'],
-  ['🐧', '#00c6ff', '#0072ff'], ['🦖', '#11998e', '#38ef7d'], ['🐲', '#fc466b', '#3f5efb'],
-  ['👽', '#00f260', '#0575e6'], ['🤖', '#bdc3c7', '#2c3e50'], ['👻', '#a18cd1', '#fbc2eb'],
-  ['😎', '#f857a6', '#ff5858'], ['🤠', '#e96443', '#904e95'], ['🥳', '#fa709a', '#fee140'],
-  ['🎧', '#4facfe', '#00f2fe'], ['🕺', '#b721ff', '#21d4fd'], ['💃', '#ff0844', '#ffb199'],
-  ['🍕', '#f6d365', '#fda085'], ['🌮', '#f093fb', '#f5576c'], ['🍩', '#ff9a9e', '#fecfef'],
-]
+import { LOOK_KEYS, MEN, WOMEN, parseAvatar, personCanvas } from './people.js'
 
-export function presetKey(i) { return 'p' + i }
+export { LOOK_KEYS, parseAvatar }
 
-const cache = new Map()
-
-// Returns a square canvas (size px) with the avatar drawn in a circle.
-export function avatarCanvas(avatar, size = 128) {
-  const key = avatar + '@' + size
-  if (cache.has(key)) return cache.get(key)
-  const c = document.createElement('canvas')
-  c.width = c.height = size
-  const g = c.getContext('2d')
-  const drawPreset = (i) => {
-    const [emoji, a, b] = PRESETS[i] || PRESETS[0]
-    const grad = g.createLinearGradient(0, 0, size, size)
-    grad.addColorStop(0, a)
-    grad.addColorStop(1, b)
-    g.fillStyle = grad
-    g.beginPath()
-    g.arc(size / 2, size / 2, size / 2, 0, Math.PI * 2)
-    g.fill()
-    g.font = `${Math.round(size * 0.6)}px "Apple Color Emoji","Segoe UI Emoji","Noto Color Emoji",sans-serif`
-    g.textAlign = 'center'
-    g.textBaseline = 'middle'
-    g.fillText(emoji, size / 2, size / 2 + size * 0.04)
-  }
-  if (typeof avatar === 'string' && avatar.startsWith('data:image')) {
-    drawPreset(0)
-    const img = new Image()
-    img.onload = () => {
-      g.clearRect(0, 0, size, size)
-      g.save()
-      g.beginPath()
-      g.arc(size / 2, size / 2, size / 2, 0, Math.PI * 2)
-      g.clip()
-      const s = Math.min(img.width, img.height)
-      g.drawImage(img, (img.width - s) / 2, (img.height - s) / 2, s, s, 0, 0, size, size)
-      g.restore()
-    }
-    img.src = avatar
-  } else {
-    const i = parseInt(String(avatar).slice(1), 10)
-    drawPreset(Number.isFinite(i) ? i : 0)
-  }
-  cache.set(key, c)
-  return c
+export function lookName(key) {
+  const { woman, look } = parseAvatar(key)
+  return (woman ? 'Woman · ' : 'Man · ') + look.name
 }
+
+export function randomLook() {
+  return LOOK_KEYS[Math.floor(Math.random() * LOOK_KEYS.length)]
+}
+
+export function bodyOf(avatar) {
+  const { body } = parseAvatar(avatar)
+  return /^[mw]\d+$/.test(body) ? body : 'm0'
+}
+
+export function withPhoto(body, photo) {
+  return photo ? `${body}|${photo}` : body
+}
+
+export function photoOf(avatar) {
+  return parseAvatar(avatar).photo
+}
+
+export const LOOK_COUNTS = { men: MEN.length, women: WOMEN.length }
 
 // Square-crop and downscale an uploaded photo to a small JPEG data URL.
 export function photoToAvatar(file) {
@@ -79,18 +50,19 @@ export function photoToAvatar(file) {
   })
 }
 
-// A DOM element for lists/overlays. Photos use <img> so they show once decoded
-// (copying the cached canvas would freeze whatever was drawn at that instant).
+// A DOM element (portrait of the person) for lists and overlays. Photo faces
+// decode asynchronously, so those copies redraw once the photo is ready.
 export function avatarEl(avatar, size = 64) {
-  if (typeof avatar === 'string' && avatar.startsWith('data:image')) {
-    const img = document.createElement('img')
-    img.src = avatar
-    img.width = img.height = size
-    img.alt = ''
-    return img
-  }
   const c = document.createElement('canvas')
-  c.width = c.height = size
-  c.getContext('2d').drawImage(avatarCanvas(avatar, 128), 0, 0, size, size)
+  c.width = c.height = size * 2
+  const g = c.getContext('2d')
+  const paint = () => { g.clearRect(0, 0, c.width, c.height); g.drawImage(personCanvas(avatar, 128), 0, 0, c.width, c.height) }
+  paint()
+  if (photoOf(avatar)) {
+    const img = new Image()
+    img.onload = () => setTimeout(paint, 0)
+    img.src = photoOf(avatar)
+  }
+  c.style.width = c.style.height = size + 'px'
   return c
 }

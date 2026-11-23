@@ -79,6 +79,7 @@ try {
 
   let round = 0
   let lastTrack = null
+  let firstOut = null
   const tracks = new Set()
   while (true) {
     round++
@@ -86,8 +87,29 @@ try {
     const info = await host.evaluate(() => ({ no: window.__mc.client.round.no, m: window.__mc.client.round.m, order: window.__mc.client.round.order, track: window.__mc.audio.trackName() }))
     tracks.add(info.track)
     lastTrack = info.track
+    if (firstOut) {
+      await firstOut.waitForSelector('#predict:not([hidden]) .pr-row button', { timeout: 5000 })
+      if (info.no === 2) {
+        await firstOut.click('#predict .pr-row button')
+        await firstOut.waitForFunction(() => !!window.__mc.client.state.status[window.__mc.client.me].pick, { timeout: 5000 })
+        await shot(firstOut, 'predict')
+      }
+    }
     await sleep(1200)
     await shot(host, `r${info.no}-music`)
+    if (info.no === 1) {
+      // Clicking a chair while the music plays does nothing.
+      const pt = await players[0].evaluate(() => {
+        const { client, renderer } = window.__mc
+        const c = client.chairPoints()[0]
+        return renderer.toScreen(c.x, c.y, 30)
+      })
+      const before = await players[0].evaluate(() => window.__mc.client.state.phase)
+      await players[0].mouse.click(pt.x, pt.y)
+      const t = await players[0].evaluate(() => ({ target: window.__mc.client.input.target, phase: window.__mc.client.state.phase }))
+      if (before === 'music' && t.phase === 'music') assert(t.target === null, 'clicks during the music are ignored')
+      else console.log(`    (music ended before the click check: ${before} -> ${t.phase}, target ${JSON.stringify(t.target)})`)
+    }
     step(`round ${info.no}: ${info.order.length} dancers, ${info.m} chairs, track "${info.track}"`)
 
     // Pick who will stand still and get booted: the last-joined alive player.
@@ -131,13 +153,15 @@ try {
     }
     await sleep(300)
     await shot(host, `r${info.no}-scramble`)
+    if (info.no === 1) {
+      const tm = await host.evaluate(() => ({ shown: !document.getElementById('timer').hidden, n: +document.getElementById('timer-n').textContent }))
+      assert(tm.shown && tm.n > 0, `a hurry-up timer counts down once the music stops (${tm.n}s left)`)
+    }
 
     const runners = alive.filter((p) => p !== loser)
     const results = await Promise.all(runners.map((p, i) => scrambleForChair(p, i % 2 ? 'keys' : 'click')))
-    if (info.no === 1) {
-      const lock = await host.evaluate(() => JSON.stringify(window.__mc.client.input.target))
-      assert(!/chair/.test(lock), 'in Wild a click is just a spot to run to (no lock-on chasing)')
-    }
+    if (runners.some((p, i) => i % 2 === 0 && p.lockSeen)) assert(true, 'clicking a chair grabs it on the spot')
+    else if (info.no === 1) assert(false, 'clicking a chair grabs it on the spot')
     assert(results.every(Boolean), `${runners.length} players found a chair (mouse + keyboard)`)
 
     await waitPhase(host, 'result', 15000)
@@ -149,17 +173,46 @@ try {
     const loserBanner = await loser.$eval('#overlay-card h2', (h) => h.textContent)
     assert(/BOOTED/.test(loserBanner), `loser sees "${loserBanner}"`)
 
+    if (round === 1) {
+      firstOut = loser
+      const pts = await host.evaluate(() => Object.values(window.__mc.client.state.status).map((x) => x.pts))
+      assert(pts.filter((x) => x > 0).length === 4, `the 4 who sat scored points (${pts.join(', ')})`)
+      const jt = await host.$$eval('#side-roster .jt-pts', (els) => els.map((e) => +e.textContent))
+      assert(jt.some((x) => x > 0), `the jumbotron shows the scores (${jt.join(', ')})`)
+      const facts = await host.$eval('#overlay-card', (c) => c.textContent)
+      assert(/Fastest/.test(facts), 'the result card names the fastest sitter')
+    } else if (round === 2) {
+      const pick = await firstOut.evaluate(() => window.__mc.client.state.status[window.__mc.client.me].pick)
+      assert(!!pick, 'the first player out made a "who\'s out next?" call in round 2')
+    }
     if (alive.length === 2) break
   }
 
-  step('champion is crowned')
+  step('level 1 complete: everyone comes back for level 2')
+  for (const p of all) await waitPhase(p, 'levelup', 15000)
+  const hostId = await host.evaluate(() => window.__mc.client.me)
+  const lc = await Promise.all(all.map((p) => p.evaluate(() => window.__mc.client.state.levelChamp)))
+  assert(lc.every((c) => c === hostId), 'the host (who always sat) won level 1, and everyone agrees')
+  await sleep(600)
+  await shot(host, 'levelup')
+  const lvCard = await players[0].$eval('#overlay-card', (c) => c.textContent)
+  assert(/Level 1 complete/.test(lvCard) && /Level 2/.test(lvCard), 'the level card names the next level')
+  for (const p of all) await waitPhase(p, 'intro', 15000)
+  const back = await host.evaluate(() => ({ level: window.__mc.client.state.round.level, alive: Object.values(window.__mc.client.state.status).filter((s) => s.alive).length }))
+  assert(back.level === 2 && back.alive === 5, `level 2 starts on its own with all 5 back in (${JSON.stringify(back)})`)
+
+  step('host ends the game: the most points wins')
+  host.once('dialog', (d) => d.accept())
+  await host.click('#end-btn')
   for (const p of all) await waitPhase(p, 'winner', 15000)
   const champs = await Promise.all(all.map((p) => p.evaluate(() => window.__mc.client.state.champion)))
   assert(champs.every((c) => c && c === champs[0]), 'all screens agree on the champion')
-  const hostId = await host.evaluate(() => window.__mc.client.me)
-  assert(champs[0] === hostId, 'the host (who always sat) is champion')
+  const pts = await host.evaluate(() => window.__mc.client.state.status)
+  assert(pts[champs[0]].pts === Math.max(...Object.values(pts).map((x) => x.pts)), 'the champion has the most points')
   await sleep(800)
   await shot(host, 'winner')
+  const steps = await host.$$eval('#overlay-card .podium .step', (els) => els.length)
+  assert(steps === 3, 'the winner screen shows a top-3 podium')
   const title = await players[0].$eval('#overlay-card h2', (h) => h.textContent)
   assert(/wins/i.test(title), `players see "${title}"`)
   assert(tracks.size >= 2, `rounds used ${tracks.size} different tracks`)
@@ -169,9 +222,12 @@ try {
   for (const p of all) await waitPhase(p, 'intro', 8000)
   const aliveAgain = await host.evaluate(() => Object.values(window.__mc.client.state.status).filter((s) => s.alive).length)
   assert(aliveAgain === 5, 'all 5 back in for game two')
+  host.once('dialog', (d) => d.accept())
   await host.click('#end-btn')
+  for (const p of all) await waitPhase(p, 'winner', 8000)
+  await host.click('#overlay-card .btn:not(.primary)')
   for (const p of all) await waitPhase(p, 'lobby', 8000)
-  assert(true, 'host can end the game back to the lobby')
+  assert(true, 'host can end the game and go back to the lobby')
 } catch (e) {
   failed = true
   console.error(e)

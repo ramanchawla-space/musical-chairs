@@ -23,7 +23,7 @@ try {
   const [p1, p2, p3] = players
   await host.waitForFunction(() => window.__mc.client.roster.size === 4)
   const note = await host.$eval('#lobby-note', (e) => e.textContent)
-  assert(/3 players · 2 chairs/.test(note), `host lobby: "${note}"`)
+  assert(/3 players · 5 levels · 2 chairs/.test(note), `host lobby: "${note}"`)
 
   step('P2 refreshes the page in the lobby')
   const p2id = await p2.evaluate(() => window.__mc.client.me)
@@ -56,10 +56,10 @@ try {
   const late = await launch('LATE')
   await joinGame(late, code, 'Latecomer', 9)
   const lateSt = await late.evaluate(() => window.__mc.client.status())
-  assert(lateSt.waiting && !lateSt.alive, 'latecomer waits for the next game')
+  assert(lateSt.waiting && !lateSt.alive, 'latecomer waits for the next level')
   await waitPhase(late, 'music', 15000)
   const hint = await late.$eval('#hint', (e) => !e.hidden && e.textContent)
-  assert(/next one/.test(hint), `latecomer sees: "${hint}"`)
+  assert(/next level/.test(hint), `latecomer sees: "${hint}"`)
   await shot(host, 'bigscreen-music')
 
   step('final round: P1 sits, P2 stands still')
@@ -67,10 +67,15 @@ try {
   await p2.evaluate(() => { const c = window.__mc.client; c._update = c.update; c.update = () => {} })
   await waitPhase(p1, 'scramble', 30000)
   await scrambleForChair(p1, 'click')
-  await waitPhase(host, 'winner', 20000)
+  await waitPhase(host, 'levelup', 20000)
   await p2.evaluate(() => { const c = window.__mc.client; c.update = c._update })
-  const champ = await host.evaluate(() => window.__mc.client.state.champion)
-  assert(champ === (await p1.evaluate(() => window.__mc.client.me)), 'P1 is champion')
+  const champ = await host.evaluate(() => window.__mc.client.state.levelChamp)
+  assert(champ === (await p1.evaluate(() => window.__mc.client.me)), 'P1 wins the level')
+  await waitPhase(late, 'intro', 15000)
+  const lateIn = await late.evaluate(() => window.__mc.client.status())
+  assert(lateIn.alive && !lateIn.waiting, 'the latecomer is in from the next level')
+  await host.evaluate(() => window.__mc.client.cmd('end'))
+  await waitPhase(host, 'winner', 10000)
 
   step('host DJ mode: music runs until the host hits Space')
   await host.click('#overlay-card .btn:not(.primary)') // back to lobby

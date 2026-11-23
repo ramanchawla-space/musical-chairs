@@ -3,8 +3,8 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no" />
-  <title>Musical Chairs — Rave Edition</title>
-  <meta name="description" content="Multiplayer musical chairs for your team. Rave music, wild dance patterns, one chair too few." />
+  <title>Musical Chairs — Party Edition</title>
+  <meta name="description" content="Multiplayer musical chairs for your team. Smooth music, a big checkerboard floor, one chair too few." />
   <link rel="icon" href="favicon.svg" type="image/svg+xml" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -17,7 +17,7 @@
   <section id="home" class="screen">
     <div class="card home-card">
       <h1 class="logo"><span>Musical</span><span>Chairs</span></h1>
-      <p class="tagline">RAVE EDITION · one chair too few</p>
+      <p class="tagline">PARTY EDITION · one chair too few</p>
 
       <label class="field">
         <span>Your nickname</span>
@@ -25,11 +25,12 @@
       </label>
 
       <div class="field">
-        <span>Pick your picture</span>
+        <span>Pick your dancer</span>
+        <p class="pick-hint">Top row: men · bottom row: women</p>
         <div id="avatars" class="avatar-grid"></div>
         <label class="upload">
           <input id="photo" type="file" accept="image/*" />
-          <span>📷 Use my own photo</span>
+          <span>📷 Put my own face on them</span>
         </label>
       </div>
 
@@ -52,10 +53,11 @@
       <details class="how">
         <summary>How to play</summary>
         <ol>
-          <li>The host shares the room link. Everyone picks a name and a picture.</li>
+          <li>The host shares the room link. Everyone picks a name and a man or a woman to play as.</li>
           <li>When the music plays, everyone dances round the chairs automatically. Watch the pattern!</li>
           <li>When the music <b>stops</b>, run to a free chair: <kbd>WASD</kbd>/<kbd>arrows</kbd>, or click / tap where you want to go.</li>
-          <li>There's always one chair too few. No chair? <b>Booted.</b> Last one sitting wins.</li>
+          <li>There's always one chair too few. No chair? <b>Booted</b> for the rest of the level, but you keep your points.</li>
+          <li>Five levels, each harder than the last, and everyone's back in for each one. Thrones, silver chairs and gold/silver tiles pay extra. Most points wins.</li>
         </ol>
       </details>
     </div>
@@ -64,6 +66,7 @@
   <!-- LOBBY -->
   <section id="lobby" class="screen side" hidden>
     <div class="card lobby-card">
+      <div class="lobby-body">
       <div class="room-head">
         <div>
           <div class="muted small">ROOM CODE</div>
@@ -88,6 +91,20 @@
       <div id="host-settings">
         <h3>Pick the vibe</h3>
         <div id="themes" class="themes"></div>
+        <h3>5 levels, one game</h3>
+        <ol class="level-ladder">
+          <li><b>1 · Chill</b> slow chairs, clear floor</li>
+          <li><b>2 · Easy</b> quicker + 1 obstacle</li>
+          <li><b>3 · Medium</b> faster + 2 obstacles</li>
+          <li><b>4 · Hard</b> fast + 3 obstacles</li>
+          <li><b>5 · Insane</b> chairs fly + 4 obstacles</li>
+        </ol>
+        <p class="muted small">Each level plays until one dancer is left, then <b>everyone is back in</b> for the next one. Points add up across all levels; most points wins. End the game any time with <b>End game</b>.</p>
+        <ul class="bonus-key small">
+          <li>👑 <b>Throne</b> +300 · 🥈 <b>Silver chair</b> +150</li>
+          <li>✨ <b>Gold tile</b> +150 · ◇ <b>Silver tile</b> +75 (grab a chair while it's on one)</li>
+          <li>💎 <b>Jackpot</b>: throne on gold +1000 · throne on silver +600 · silver on gold +450 · silver on silver +300</li>
+        </ul>
         <h3>Game mode</h3>
         <div class="seg" id="mode-seg">
           <button data-v="classic" class="on">Classic<small>one out per round</small></button>
@@ -109,12 +126,17 @@
           <button data-v="auto" class="on">Random<small>surprise stop</small></button>
           <button data-v="manual">Host DJ<small>you hit stop</small></button>
         </div>
-        <button id="start-btn" class="btn primary big">▶ Start the music</button>
-        <p id="lobby-note" class="muted small center"></p>
       </div>
       <div id="guest-wait" class="wait" hidden>
         <div class="eq"><i></i><i></i><i></i><i></i><i></i></div>
         Waiting for the host to drop the beat…
+      </div>
+      </div>
+      <!-- its own footer, so the settings scroll above it and never sit underneath -->
+      <div id="host-start" class="lobby-foot">
+        <div id="lobby-more" class="more-hint" hidden>▾ More settings below, scroll down</div>
+        <button id="start-btn" class="btn primary big">▶ Start the music</button>
+        <p id="lobby-note" class="muted small center"></p>
       </div>
     </div>
   </section>
@@ -136,6 +158,8 @@
     </div>
     <div class="hint" id="hint" hidden></div>
     <div class="side-roster" id="side-roster"></div>
+    <div class="predict" id="predict" hidden></div>
+    <div class="timer" id="timer" hidden><b id="timer-n"></b><span id="timer-label"></span><i><u id="timer-bar"></u></i></div>
   </section>
 
   <div id="banner" class="banner"></div>

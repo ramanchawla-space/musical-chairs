@@ -13,6 +13,7 @@ export const MOVE_SPEED = 300         // world units / second while scrambling
 export const ARENA_MARGIN = 360       // free floor beyond the outermost chair
 
 export const THEMES = ['neon', 'cosmic', 'sunset']
+export const TRACK_COUNT = 9 // tracks in the round rotation (audio.js TRACKS)
 export const MODES = ['classic', 'turbo']
 
 // --- Seeded RNG ---------------------------------------------------------------
@@ -39,19 +40,146 @@ export function shuffle(arr, rand) {
 
 // --- Rules --------------------------------------------------------------------
 
+// --- Points ------------------------------------------------------------------
+// Sitting scores 100, plus up to 250 for speed (it drains over ~4s after the
+// stop), plus 100 for being first down. Special chairs and tiles pay extra
+// (see below). Surviving round after round adds a streak bonus; out players score
+// by calling who goes next; the last one standing in each level gets a bonus.
+// Points carry across all five levels: the most points wins the game.
+export const POINTS = {
+  sit: 100, speed: 250, speedDrain: 60, first: 100, streak: 25, predict: 200,
+  levelWin: 300,
+}
+
+export function sitPoints(secs, order) {
+  const speed = Math.max(0, Math.round(POINTS.speed - POINTS.speedDrain * Math.max(0, secs)))
+  return POINTS.sit + speed + (order === 0 ? POINTS.first : 0)
+}
+
+// Bonus for surviving `streak` rounds in a row (the first survival earns none).
+export function streakBonus(streak) {
+  return POINTS.streak * Math.max(0, streak - 1)
+}
+
+// --- Special chairs and bonus tiles ----------------------------------------------
+// Every round a few chairs are golden THRONES and a few more are SILVER chairs.
+// Some of the board's squares are GOLD TILES and some SILVER TILES: grab a
+// chair while it is on one for extra points. A special chair on a special tile
+// pays a combo, topped by the JACKPOT: a throne on a gold tile. Everything is
+// seeded from the round, so every screen and the host agree.
+export const CHAIR_BONUS = { throne: 300, silver: 150 }
+export const TILE_BONUS = { gold: 150, silver: 75 }
+// chair -> tile -> combo points (replaces the two separate bonuses)
+export const COMBO_BONUS = {
+  throne: { gold: 1000, silver: 600 },
+  silver: { gold: 450, silver: 300 },
+}
+export const BONUS_KINDS = {
+  jackpot: { chair: 'throne', tile: 'gold' },
+  royal: { chair: 'throne', tile: 'silver' },
+  golden: { chair: 'silver', tile: 'gold' },
+  sterling: { chair: 'silver', tile: 'silver' },
+  throne: { chair: 'throne', tile: null },
+  silver: { chair: 'silver', tile: null },
+  gold: { chair: null, tile: 'gold' },
+  silvertile: { chair: null, tile: 'silver' },
+}
+
+export function specialChairs(seed, m) {
+  if (m <= 0) return { thrones: [], silvers: [] }
+  const rand = rng((seed ^ 0x7e7203e) >>> 0)
+  const order = shuffle([...Array(m).keys()], rand)
+  const nT = m <= 2 ? 1 : Math.max(1, Math.round(m / 6))
+  const nS = m <= 2 ? 0 : Math.max(1, Math.round(m / 4))
+  const sort = (a) => a.sort((x, y) => x - y)
+  return { thrones: sort(order.slice(0, nT)), silvers: sort(order.slice(nT, Math.min(m, nT + nS))) }
+}
+export function throneChairs(seed, m) {
+  return specialChairs(seed, m).thrones
+}
+
+export const GOLD_TILE_COUNT = 8
+export const SILVER_TILE_COUNT = 12
+// [col, row] squares of the BOARD_X x BOARD_Y board. The middle squares
+// (where the round table goes) are never special.
+export function bonusTiles(seed) {
+  const rand = rng((seed ^ 0x601d) >>> 0)
+  const all = []
+  for (let j = 0; j < BOARD_Y; j++) {
+    for (let i = 0; i < BOARD_X; i++) {
+      const mid = i >= BOARD_X / 2 - 2 && i < BOARD_X / 2 + 2 && j >= BOARD_Y / 2 - 2 && j < BOARD_Y / 2 + 2
+      if (!mid) all.push([i, j])
+    }
+  }
+  const mixed = shuffle(all, rand)
+  return { gold: mixed.slice(0, GOLD_TILE_COUNT), silver: mixed.slice(GOLD_TILE_COUNT, GOLD_TILE_COUNT + SILVER_TILE_COUNT) }
+}
+export function goldTiles(seed) {
+  return bonusTiles(seed).gold
+}
+
+// Which board square a point is on.
+export function tileAt(p, arena) {
+  const { hx, hy, tile } = boardSize(arena)
+  const i = Math.floor((p.x + hx) / tile)
+  const j = Math.floor((p.y + hy) / tile)
+  return i >= 0 && i < BOARD_X && j >= 0 && j < BOARD_Y ? [i, j] : null
+}
+
+const hasTile = (tiles, t) => !!t && !!tiles?.some(([i, j]) => i === t[0] && j === t[1])
+export function onGoldTile(p, arena, tiles) {
+  return hasTile(tiles, tileAt(p, arena))
+}
+
+// 'gold' | 'silver' | null: the bonus tile under a point this round.
+export function tileKind(p, round) {
+  const t = tileAt(p, round.arena)
+  if (hasTile(round.gold, t)) return 'gold'
+  if (hasTile(round.silver, t)) return 'silver'
+  return null
+}
+
+// 'throne' | 'silver' | null
+export function chairKind(round, i) {
+  if (round.thrones?.includes(i)) return 'throne'
+  if (round.silvers?.includes(i)) return 'silver'
+  return null
+}
+
+// The bonus for grabbing a `chair`-kind chair on a `tile`-kind square.
+export function chairBonus(chair, tile) {
+  if (chair === true) chair = 'throne' // (throne, onGold) shorthand
+  if (tile === true) tile = 'gold'
+  if (chair === false) chair = null
+  if (tile === false) tile = null
+  const kind = Object.keys(BONUS_KINDS).find((k) => BONUS_KINDS[k].chair === (chair || null) && BONUS_KINDS[k].tile === (tile || null)) || null
+  const pts = chair && tile ? COMBO_BONUS[chair][tile] : chair ? CHAIR_BONUS[chair] : tile ? TILE_BONUS[tile] : 0
+  return { kind, pts }
+}
+
 // Classic: one chair fewer than players. Turbo: roughly a quarter of the field
-// goes each round, so a 30-person team finishes in ~10 rounds instead of 29.
+// goes each round, so a 30-person team finishes a level in ~10 rounds.
 export function chairCount(alive, mode = 'classic') {
   if (alive <= 1) return 0
   const cut = mode === 'turbo' ? Math.max(1, Math.ceil(alive * 0.25)) : 1
   return Math.max(1, alive - cut)
 }
 
-// How long the music plays before it cuts out (ms). Random so nobody can
-// count bars; turbo is snappier.
+// How long the music plays before it cuts out (ms). Deliberately
+// unpredictable: about one round in five is a sudden stop after a few
+// seconds, one in five is a long one, the rest are in between. Turbo is
+// snappier.
+export const MUSIC_LENGTHS = {
+  short: [3500, 7000],
+  normal: [9000, 22000],
+  long: [26000, 40000],
+}
 export function musicDuration(rand, mode = 'classic') {
-  const [lo, hi] = mode === 'turbo' ? [8000, 17000] : [11000, 26000]
-  return Math.round(lo + rand() * (hi - lo))
+  const roll = rand()
+  const kind = roll < 0.2 ? 'short' : roll < 0.8 ? 'normal' : 'long'
+  const [lo, hi] = MUSIC_LENGTHS[kind]
+  const ms = lo + rand() * (hi - lo)
+  return Math.round(mode === 'turbo' ? ms * 0.7 : ms)
 }
 
 // --- Chair layouts --------------------------------------------------------------
@@ -165,19 +293,55 @@ export function arenaFor(R, players) {
   return R + ARENA_MARGIN + ARENA_PER_PLAYER * Math.max(0, players)
 }
 
-// --- Difficulty ----------------------------------------------------------------
-// 0 in the opening round, rising to 1 for the final showdown as players get
-// booted: faster chairs, longer blink-outs, more hazards at once. `start` is
-// how many players began the game (falls back to an absolute scale).
-export function difficulty(m, start) {
-  const clamp = (v) => Math.min(1, Math.max(0, v))
-  if (start === 2) return 1
-  if (start > 2) return clamp((start - 1 - m) / Math.max(1, start - 2))
-  return clamp((10 - m) / 9)
+// The floor is a big rectangular checkerboard, BOARD_X x BOARD_Y squares.
+// `arena` stays the single size number every round carries; the board's
+// half-width and half-depth come from it, so the tiles are always square.
+export const BOARD_X = 12
+export const BOARD_Y = 10
+export function boardSize(arena) {
+  const hx = arena * 0.95
+  return { hx, hy: (hx * BOARD_Y) / BOARD_X, tile: (2 * hx) / BOARD_X }
 }
 
+export function insideBoard(p, arena, margin = 0) {
+  const { hx, hy } = boardSize(arena)
+  return Math.abs(p.x) <= hx - margin + 1e-6 && Math.abs(p.y) <= hy - margin + 1e-6
+}
+
+function clampBox(x, y, lx, ly) {
+  return { x: Math.max(-lx, Math.min(lx, x)), y: Math.max(-ly, Math.min(ly, y)) }
+}
+
+// --- Levels ---------------------------------------------------------------------
+// A game is five levels played back to back. Each level runs until one player
+// is left; then EVERYONE comes back in for the next, harder level. Higher
+// levels make the chairs quicker, give less time to sit and bring in more
+// obstacles (only once the music stops, so the dance stays clear). `stop` is
+// the chairs' speed after the stop, relative to the dance.
+export const LEVELS = {
+  1: { name: 'Chill', blurb: 'slow chairs, clear floor', speed: 0.6, stop: 0.45, hazards: 0, blink: 0, time: 1 },
+  2: { name: 'Easy', blurb: 'quicker chairs + 1 obstacle', speed: 0.72, stop: 0.6, hazards: 1, blink: 0, time: 0.9 },
+  3: { name: 'Medium', blurb: 'faster + 2 obstacles', speed: 0.85, stop: 0.8, hazards: 2, blink: 0.25, time: 0.8 },
+  4: { name: 'Hard', blurb: 'fast + 3 obstacles', speed: 1, stop: 1.05, hazards: 3, blink: 0.5, time: 0.72 },
+  5: { name: 'Insane', blurb: 'chairs fly + 4 obstacles', speed: 1.15, stop: 1.3, hazards: 4, blink: 0.8, time: 0.65 },
+}
+export const LEVEL_IDS = [1, 2, 3, 4, 5]
+export const TOTAL_LEVELS = LEVEL_IDS.length
+export const DEFAULT_LEVEL = 1
+
+export function levelOf(round) {
+  return LEVELS[round?.level] || LEVELS[DEFAULT_LEVEL]
+}
+
+// How long players get to sit once the music stops: less time on higher levels.
+export function scrambleWindow(round, maxMs) {
+  return Math.round(maxMs * levelOf(round).time)
+}
+
+// 0 (Chill) .. 1 (Insane): how intense the obstacles are.
 export function roundLevel(round) {
-  return difficulty(round.chairs ? round.chairs.length : round.m, round.start)
+  const id = LEVELS[round?.level] ? round.level : DEFAULT_LEVEL
+  return (id - 1) / 4
 }
 
 export const HAZARDS = ['fog', 'birds', 'blackout', 'mirage', 'balls', 'bouncers', 'balloons', 'lasers', 'smoke', 'darkness', 'spin', 'confetti']
@@ -187,13 +351,17 @@ export const HAZARD_NAMES = {
   darkness: 'Lights out', spin: 'Spinning floor', confetti: 'Confetti storm',
 }
 
-// Which hazards hit this round: a random mix, more of them as it gets harder.
-// Seeded, so every screen (and the host) agrees.
-export function roundHazards(seed, m, roundNo = 1, start) {
-  const lv = difficulty(m, start)
+// Obstacles that leave the floor mostly visible. The ones that hide a lot of
+// the floor (fog, blackouts, smoke, lights out, spinning) only join on level 5.
+const LIGHT_HAZARDS = ['birds', 'balloons', 'balls', 'bouncers', 'mirage', 'confetti']
+
+// Which hazards hit this round: none on level 1, one more each level after. Seeded, so every screen (and the host) agrees.
+export function roundHazards(seed, level = DEFAULT_LEVEL) {
+  const L = LEVELS[level] || LEVELS[DEFAULT_LEVEL]
+  if (!L.hazards) return []
   const rand = rng((seed ^ 0x4a2a4a2a) >>> 0)
-  const n = Math.min(HAZARDS.length, 3 + Math.round(lv * 7) + (roundNo > 3 ? 1 : 0))
-  return shuffle(HAZARDS, rand).slice(0, n)
+  const pool = level >= 5 ? HAZARDS : LIGHT_HAZARDS
+  return shuffle(pool, rand).slice(0, Math.min(pool.length, L.hazards))
 }
 
 export function layoutRadius(chairs) {
@@ -215,8 +383,7 @@ export function chairSpin(type) {
 // stop instant, so nothing jumps.
 
 export const MOTIONS = ['still', 'drift', 'wild']
-export const ROAM_SPEED = 265 // average chair cruise speed in Wild mode (players run at MOVE_SPEED)
-export const SCRAMBLE_BOOST = 0.4 // wild chairs speed UP (never down) when the music stops
+export const ROAM_SPEED = 230 // average chair cruise speed in Wild mode (players run at MOVE_SPEED)
 const JITTER_AMP = 10 // sideways zig-zag on top of the roaming path
 const JITTER_FREQ = 1.4
 export const MOTION_TUNING = {
@@ -243,9 +410,10 @@ export function chairMotion(base, i, s, motion = 'still', arena = Infinity) {
   const f2 = m.freq * (1.3 + (i % 4) * 0.11)
   x += m.amp * (Math.sin(f1 * s + p1) - Math.sin(p1))
   y += m.amp * (Math.sin(f2 * s + p2) - Math.sin(p2))
-  const d = Math.hypot(x, y)
-  const lim = arena - CHAIR_RADIUS * 1.5
-  if (d > lim) { x = (x / d) * lim; y = (y / d) * lim }
+  if (Number.isFinite(arena)) {
+    const { hx, hy } = boardSize(arena)
+    ;({ x, y } = clampBox(x, y, hx - CHAIR_RADIUS * 1.5, hy - CHAIR_RADIUS * 1.5))
+  }
   return { x, y, face: base.face + a + 0.4 * Math.sin(f1 * s + p2) }
 }
 
@@ -258,8 +426,22 @@ export function chairMotion(base, i, s, motion = 'still', arena = Infinity) {
 
 const roamCache = new Map()
 
-function roamPath(seed, i, base, arena, speed) {
-  const key = seed + ':' + i + ':' + Math.round(arena) + ':' + Math.round(speed)
+// Does the straight leg last -> (x, y) keep clear of a disc of radius `avoid`
+// round the middle? A leg that starts inside the disc may only head outward.
+function clearOfMiddle(last, x, y, avoid) {
+  if (!avoid) return true
+  const dx = x - last.x
+  const dy = y - last.y
+  if (Math.hypot(x, y) < avoid * 1.15) return false
+  const away = last.x * dx + last.y * dy
+  if (Math.hypot(last.x, last.y) < avoid) return away >= 0
+  const L2 = dx * dx + dy * dy || 1
+  const u = Math.max(0, Math.min(1, -away / L2))
+  return Math.hypot(last.x + dx * u, last.y + dy * u) >= avoid * 1.1
+}
+
+function roamPath(seed, i, base, arena, speed, avoid) {
+  const key = seed + ':' + i + ':' + Math.round(arena) + ':' + Math.round(speed) + ':' + Math.round(avoid)
   let path = roamCache.get(key)
   if (!path) {
     if (roamCache.size > 4000) roamCache.clear()
@@ -269,28 +451,47 @@ function roamPath(seed, i, base, arena, speed) {
   return path
 }
 
-export function roamPos(seed, i, base, t, arena, speed = ROAM_SPEED, jitter = 1) {
-  const path = roamPath(seed, i, base, arena, speed)
+// `avoid`: a radius round the middle that legs between waypoints never cut
+// through (the round table lives there once people start sitting).
+export function roamPos(seed, i, base, t, arena, speed = ROAM_SPEED, jitter = 1, avoid = 0) {
+  const path = roamPath(seed, i, base, arena, speed, avoid)
   const pts = path.pts
-  const lim = Math.max(40, arena - CHAIR_RADIUS * 2)
+  const { hx, hy } = boardSize(arena)
+  const lx = Math.max(40, hx - CHAIR_RADIUS * 2)
+  const ly = Math.max(40, hy - CHAIR_RADIUS * 2)
+  const lim = ly
   // Always keep two waypoints beyond t (needed for the spline's tangent).
   while (pts.length < 3 || pts[pts.length - 2].t <= t) {
     const last = pts[pts.length - 1]
     let x
     let y
     let d
-    // Next spot: random anywhere on the floor. Mostly long dashes, with
+    // Next spot: random anywhere on the board. Mostly long dashes, with
     // sudden short darts thrown in so a chair can jink sideways or double back.
     const dart = path.rand() < 0.35
-    // Half the trips head for the far edges of the floor.
-    const edge = !dart && path.rand() < 0.5
+    // Half the long trips head for a corner or the far edges of the board.
+    const edge = !dart && path.rand() < 0.6
+    const corner = edge && path.rand() < 0.7
+    let tries = 0
     do {
-      const r = edge ? lim * (0.82 + 0.18 * path.rand()) : Math.sqrt(path.rand()) * lim
-      const a = path.rand() * Math.PI * 2
-      x = Math.cos(a) * r
-      y = Math.sin(a) * r
+      const sx = path.rand() < 0.5 ? -1 : 1
+      const sy = path.rand() < 0.5 ? -1 : 1
+      const u = path.rand()
+      const v = path.rand()
+      if (corner) {
+        x = sx * lx * (0.8 + 0.2 * u)
+        y = sy * ly * (0.75 + 0.25 * v)
+      } else if (edge) {
+        // a spot along one of the four sides
+        if (path.rand() < 0.5) { x = sx * lx * (0.85 + 0.15 * u); y = (v * 2 - 1) * ly }
+        else { x = (u * 2 - 1) * lx; y = sy * ly * (0.85 + 0.15 * v) }
+      } else {
+        x = (u * 2 - 1) * lx
+        y = (v * 2 - 1) * ly
+      }
       d = Math.hypot(x - last.x, y - last.y)
-    } while (dart ? d < lim * 0.22 || d > lim * 0.6 : d < lim * 0.5)
+      tries++
+    } while (tries < 400 && ((dart ? d < lim * 0.22 || d > lim * 0.6 : d < lim * 0.5) || !clearOfMiddle(last, x, y, avoid)))
     const dur = (d / speed) * (0.9 + path.rand() * 0.4)
     pts.push({ x, y, t: last.t + dur })
   }
@@ -331,8 +532,7 @@ export function roamPos(seed, i, base, t, arena, speed = ROAM_SPEED, jitter = 1)
   const jf = JITTER_FREQ * (1 + (i % 5) * 0.09)
   x += jitter * JITTER_AMP * (Math.sin(jf * t * 6.283 + i) - Math.sin(i))
   y += jitter * JITTER_AMP * (Math.cos(jf * 1.37 * t * 6.283 + i * 2) - Math.cos(i * 2))
-  const d = Math.hypot(x, y)
-  if (d > lim) { x = (x / d) * lim; y = (y / d) * lim }
+  ;({ x, y } = clampBox(x, y, lx, ly))
   return { x, y, face: base.face + t * 0.9 + Math.sin(t * 2 + i) * 0.5 }
 }
 
@@ -350,38 +550,91 @@ export function chairVisibility(seed, i, t, lv = 0) {
   return u < edge ? 1 - u / edge : u > off - edge ? (u - (off - edge)) / edge : 0
 }
 
+// --- The round table -----------------------------------------------------------
+// Once somebody sits on a chair it stops roaming: chair and sitter glide to
+// a seat around a round table in the middle of the board and stay put. The
+// free chairs keep roaming but are kept out of the table area. The host
+// records [claimTime, seatSlot] per chair in round.seats; everything else is
+// a pure function of that, so every screen agrees.
+export const SEAT_GLIDE_MS = 1200
+
+export function roundTable(round) {
+  const m = Math.max(1, round.chairs.length)
+  const ring = Math.max(110, (m * 92) / (2 * Math.PI)) // where the seats sit
+  return { ring, top: ring - 56, keepOut: ring + CHAIR_RADIUS * 2.6 }
+}
+
+export function seatSlot(round, slot) {
+  const m = Math.max(1, round.chairs.length)
+  const { ring } = roundTable(round)
+  const a = -Math.PI / 2 + (slot / m) * Math.PI * 2
+  // the chair's backrest is on its local -x side, so face = angle + PI looks at the table
+  return { x: Math.cos(a) * ring, y: Math.sin(a) * ring, face: a + Math.PI }
+}
+
+const smoothstep = (u) => u * u * (3 - 2 * u)
+
 // Where chair i is at host time hostT, for any motion setting. Used by every
 // client to draw and by the host to referee claims.
 export function chairPosAt(round, i, hostT) {
+  const seat = round.seats?.[i]
+  if (seat && hostT >= seat[0]) {
+    // Taken: glide from where it was caught to its seat at the table, then stay.
+    const from = freeChairPos(round, i, seat[0])
+    const to = seatSlot(round, seat[1])
+    const u = smoothstep(Math.min(1, (hostT - seat[0]) / SEAT_GLIDE_MS))
+    let df = (to.face - from.face) % (Math.PI * 2)
+    if (df > Math.PI) df -= Math.PI * 2
+    if (df < -Math.PI) df += Math.PI * 2
+    return { x: from.x + (to.x - from.x) * u, y: from.y + (to.y - from.y) * u, face: from.face + df * u }
+  }
+  return freeChairPos(round, i, hostT)
+}
+
+// Free chairs: their roaming path, nudged out of the table area once the
+// music stops (the keep-out zone grows in smoothly, so nothing jumps).
+function freeChairPos(round, i, hostT) {
+  const p = roamingChairPos(round, i, hostT)
+  if (!round.stopAt || hostT <= round.stopAt) return p
+  const k = Math.min(1, (hostT - round.stopAt) / 1500)
+  const R = roundTable(round).keepOut * k
+  const d = Math.hypot(p.x, p.y)
+  if (d >= R) return p
+  const a = d > 1e-6 ? Math.atan2(p.y, p.x) : i * 2.399
+  return { x: Math.cos(a) * R, y: Math.sin(a) * R, face: p.face }
+}
+
+function roamingChairPos(round, i, hostT) {
   const base = round.chairs[i]
   const sinceMusic = Math.max(0, (hostT - round.musicAt) / 1000)
+  const L = levelOf(round)
   if (round.motion === 'wild') {
-    // Path time runs faster once the music stops: same path, no jump, more speed.
+    // Once the music stops the path clock runs slower (or faster on the top
+    // levels): same path, no jump, just a different pace.
     const sinceStop = round.stopAt ? Math.max(0, (hostT - round.stopAt) / 1000) : 0
     const lv = roundLevel(round)
-    const speed = ROAM_SPEED * (1 + 0.25 * lv)
-    const boost = SCRAMBLE_BOOST + 0.15 * lv
-    return roamPos(round.seed, i, base, sinceMusic + boost * sinceStop, round.arena, speed, 1 + 0.4 * lv)
+    return roamPos(round.seed, i, base, sinceMusic + (L.stop - 1) * sinceStop, round.arena, ROAM_SPEED * L.speed, 0.6 + 0.8 * lv, roundTable(round).keepOut)
   }
   const stopTau = round.stopAt ? Math.max(0, (round.stopAt - round.musicAt) / 1000) : Infinity
   const spin = chairSpin(round.layout) * Math.min(sinceMusic, stopTau)
   const c = Math.cos(spin)
   const s = Math.sin(spin)
   const spun = { x: base.x * c - base.y * s, y: base.x * s + base.y * c, face: base.face + spin }
-  if (round.stopAt && hostT > round.stopAt) return chairMotion(spun, i, (hostT - round.stopAt) / 1000, round.motion, round.arena)
+  if (round.stopAt && hostT > round.stopAt) return chairMotion(spun, i, ((hostT - round.stopAt) / 1000) * L.stop, round.motion, round.arena)
   return spun
 }
 
 // Bouncers: big lads who wander the floor and physically block you.
 export const BOUNCER_RADIUS = 34
 export function bouncers(round, hostT) {
-  const n = 2 + Math.round(roundLevel(round) * 3) + Math.floor(round.order?.length / 8 || 0)
+  const n = 1 + Math.round(roundLevel(round) * 3) + Math.floor(round.order?.length / 10 || 0)
   const seed = (round.seed ^ 0xb0b) >>> 0
   const since = Math.max(0, (hostT - round.musicAt) / 1000)
   const out = []
+  const { hx, hy } = boardSize(round.arena)
   for (let i = 0; i < n; i++) {
     const a = (i / n) * Math.PI * 2 + 0.4
-    const base = { x: Math.cos(a) * round.arena * 0.5, y: Math.sin(a) * round.arena * 0.5, face: 0 }
+    const base = { x: Math.cos(a) * hx * 0.5, y: Math.sin(a) * hy * 0.5, face: 0 }
     out.push(roamPos(seed, i, base, since, round.arena, 120, 0))
   }
   return out
@@ -578,10 +831,13 @@ export function buildRound(seed, roundNo, aliveIds, mode, layoutMode = 'mix', st
   }
 }
 
+// Keep a player on the checkerboard.
 export function clampToArena(p, arena) {
-  const d = Math.hypot(p.x, p.y)
-  if (d <= arena) return p
-  return { x: (p.x / d) * arena, y: (p.y / d) * arena }
+  const { hx, hy } = boardSize(arena)
+  const lx = hx - PLAYER_RADIUS * 0.6
+  const ly = hy - PLAYER_RADIUS * 0.6
+  if (Math.abs(p.x) <= lx && Math.abs(p.y) <= ly) return p
+  return clampBox(p.x, p.y, lx, ly)
 }
 
 export function nearestFreeChair(chairPts, owners, p) {

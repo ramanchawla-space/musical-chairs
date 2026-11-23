@@ -5,8 +5,8 @@ import { GameClient } from './client.js'
 import { hostRoom, joinRoom, localLink } from './net.js'
 import { Renderer, THEME_INFO } from './render.js'
 import { SoundEngine, TRACKS, roundTrack } from './audio.js'
-import { PRESETS, presetKey, avatarEl, photoToAvatar } from './avatars.js'
-import { CHAIR_RADIUS, LAYOUT_NAMES, PATTERN_NAMES, HAZARD_NAMES, segmentAt, chairCount, difficulty } from './core.js'
+import { LOOK_KEYS, avatarEl, photoToAvatar, lookName, randomLook, bodyOf, withPhoto, photoOf } from './avatars.js'
+import { CHAIR_RADIUS, LAYOUT_NAMES, PATTERN_NAMES, HAZARD_NAMES, segmentAt, chairCount, LEVELS, DEFAULT_LEVEL, TOTAL_LEVELS, POINTS } from './core.js'
 import { workerTimers } from './timers.js'
 
 const $ = (id) => document.getElementById(id)
@@ -37,7 +37,10 @@ function tabId() {
   } catch { return 'c' + Math.random().toString(36).slice(2, 10) }
 }
 
-let avatar = store.get('mc_avatar', presetKey(Math.floor(Math.random() * PRESETS.length)))
+// Old saves held emoji keys ('p3') or a bare photo: turn them into a person.
+let avatar = store.get('mc_avatar', '')
+if (!/^[mw]\d+(\|data:image)?/.test(avatar)) avatar = withPhoto(randomLook(), avatar.startsWith('data:image') ? avatar : null)
+let myPhoto = photoOf(avatar) || store.get('mc_photo', '') || null
 $('nick').value = store.get('mc_name', '')
 
 // --- Home screen ---------------------------------------------------------------------
@@ -45,14 +48,16 @@ $('nick').value = store.get('mc_name', '')
 function renderAvatarGrid() {
   const grid = $('avatars')
   grid.innerHTML = ''
-  const opts = PRESETS.map((_, i) => presetKey(i))
-  if (avatar.startsWith('data:')) opts.unshift(avatar)
+  // Row 1: men, row 2: women, then "your photo" (your chosen person wearing your face).
+  const opts = [...LOOK_KEYS]
+  if (myPhoto) opts.push(withPhoto(bodyOf(avatar), myPhoto))
   for (const key of opts) {
     const b = document.createElement('button')
     b.type = 'button'
     b.className = key === avatar ? 'on' : ''
-    b.title = key.startsWith('data:') ? 'Your photo' : PRESETS[+key.slice(1)][0]
-    b.appendChild(avatarEl(key, 96))
+    b.title = key.includes('|') ? 'Your photo' : lookName(key)
+    b.setAttribute('aria-label', b.title)
+    b.appendChild(avatarEl(key, 48))
     b.onclick = () => { avatar = key; store.set('mc_avatar', key); renderAvatarGrid() }
     grid.appendChild(b)
   }
@@ -63,7 +68,9 @@ $('photo').onchange = async (e) => {
   const f = e.target.files[0]
   if (!f) return
   try {
-    avatar = await photoToAvatar(f)
+    myPhoto = await photoToAvatar(f)
+    store.set('mc_photo', myPhoto)
+    avatar = withPhoto(bodyOf(avatar), myPhoto)
     store.set('mc_avatar', avatar)
     // Photo avatars load asynchronously; redraw once decoded.
     renderAvatarGrid()
@@ -113,7 +120,7 @@ $('host-btn').onclick = async () => {
     const timers = workerTimers()
     hub = new Hub({
       ...timers,
-      ...(FAST ? { timing: { intro: 1800, result: 2000, scrambleMax: 7000, settle: 500 }, musicScale: 0.3 } : {}),
+      ...(FAST ? { timing: { intro: 1800, result: 2000, scrambleMax: 7000, settle: 500, levelup: 2500 }, musicScale: 0.3 } : {}),
     })
     hostHandle = await hostRoom(hub, params.get('code') || undefined)
     const link = localLink(hub)
@@ -163,11 +170,11 @@ function startClient(link, prof, room) {
   qr.addData(url)
   qr.make()
   $('qr').innerHTML = qr.createSvgTag({ cellSize: 3, margin: 0, scalable: true })
-  client.on('welcome', () => { $('host-settings').hidden = !client.isHost; $('guest-wait').hidden = client.isHost; $('host-ctl').hidden = !client.isHost })
+  client.on('welcome', () => { $('host-settings').hidden = !client.isHost; $('host-start').hidden = !client.isHost; $('guest-wait').hidden = client.isHost; $('host-ctl').hidden = !client.isHost })
   client.on('roster', () => { renderRoster(); renderSideRoster() })
   client.on('state', onState)
   client.on('react', (id, e) => renderer.react(id, e))
-  client.on('denied', () => audio.sfx('denied'))
+  client.on('denied', () => { audio.sfx('denied'); try { navigator.vibrate?.([20, 40, 20]) } catch {} })
   client.on('lost', () => {
     if (client.isHost) return
     toast('Lost connection to the host. Rejoining…')
@@ -236,7 +243,7 @@ function renderRoster() {
     ul.appendChild(li)
   }
   $('start-btn').disabled = playing.length < 2
-  $('lobby-note').textContent = playing.length < 2 ? 'Waiting for at least 2 players…' : `${playing.length} players · ${chairCount(playing.length, client.state?.settings?.mode)} chairs in round 1`
+  $('lobby-note').textContent = playing.length < 2 ? 'Waiting for at least 2 players…' : `${playing.length} players · ${TOTAL_LEVELS} levels · ${chairCount(playing.length, client.state?.settings?.mode)} chairs in round 1`
 }
 
 function renderThemes() {
@@ -263,8 +270,26 @@ for (const segId of Object.keys(SEGS)) {
   }
 }
 $('start-btn').onclick = () => { audio.ensure(); client.cmd('start') }
+
+// The lobby panel scrolls: show a "more below" hint until you reach the end,
+// and let the mouse wheel scroll it from anywhere on the page (not only when
+// the pointer happens to be over the panel).
+const lobbyBody = document.querySelector('.lobby-body')
+function updateMoreHint() {
+  const left = lobbyBody.scrollHeight - lobbyBody.scrollTop - lobbyBody.clientHeight
+  $('lobby-more').hidden = left < 12 || getComputedStyle(lobbyBody).overflowY !== 'auto'
+}
+lobbyBody.addEventListener('scroll', updateMoreHint, { passive: true })
+window.addEventListener('resize', updateMoreHint)
+new ResizeObserver(updateMoreHint).observe(lobbyBody)
+window.addEventListener('wheel', (e) => {
+  if ($('lobby').hidden || lobbyBody.contains(e.target)) return
+  lobbyBody.scrollBy({ top: e.deltaY * (e.deltaMode === 1 ? 32 : 1) })
+}, { passive: true })
 $('stop-btn').onclick = () => client.cmd('stop')
-$('end-btn').onclick = () => client.cmd('lobby')
+$('end-btn').onclick = () => {
+  if (confirm('End the game now? Everyone keeps their points and the final podium is shown.')) client.cmd('end')
+}
 $('mute-btn').onclick = () => toggleMute()
 function toggleMute() {
   audio.setMuted(!audio.muted)
@@ -310,7 +335,7 @@ function onState(s, prev) {
   const prevPhase = prev?.phase
   if (s.settings.theme !== renderer.theme) { renderer.setTheme(s.settings.theme); renderThemes() }
   for (const [segId, key] of Object.entries(SEGS)) {
-    $(segId).querySelectorAll('button').forEach((b) => b.classList.toggle('on', b.dataset.v === s.settings[key]))
+    $(segId).querySelectorAll('button').forEach((b) => b.classList.toggle('on', b.dataset.v === String(s.settings[key])))
   }
   if (s.notice && client.isHost) toast(s.notice)
 
@@ -330,12 +355,28 @@ function onState(s, prev) {
         const info = client.roster.get(o)
         if (c) renderer.burst(c.x, c.y, info?.color || '#fff')
         audio.sfx(o === client.me ? 'sit' : 'other-sit')
-        if (o === client.me) { banner('SAFE! 🪑'); client.input.target = null }
+        const st = s.status[o]
+        if (st?.gain) {
+          const first = s.round?.fastest?.id === o
+          const secs = st.sitMs != null ? `  ⚡${(st.sitMs / 1000).toFixed(2)}s` : ''
+          const tag = BONUS_TAGS[st.bonus]
+          const color = st.bonus === 'jackpot' ? '#ff6ef2' : st.bonus ? (BONUS_TAGS[st.bonus].pop.includes('🥈') || st.bonus === 'silvertile' ? '#dfe9f5' : '#ffd54a') : first ? '#ffd54a' : '#7cff9e'
+          renderer.popText(o, `${tag ? tag.pop + ' ' : first ? 'FIRST! ' : ''}+${st.gain}${o === client.me ? secs : ''}`, color, o === client.me || st.bonus === 'jackpot')
+          if (st.bonus === 'jackpot' && c) { renderer.burst(c.x, c.y, '#ffd54a', 60); renderer.burst(c.x, c.y, '#ff6ef2', 40) }
+          if (st.bonus && o !== client.me) toast(`${tag.icon} ${nameOf(o)} ${tag.verb}!`)
+        }
+        if (o === client.me) {
+          const tag = BONUS_TAGS[st?.bonus]
+          banner(tag ? tag.banner : 'SAFE! 🪑')
+          if (st?.bonus) audio.sfx('win')
+          client.input.target = null
+        }
       }
     })
   }
   updateHud()
   renderSideRoster()
+  renderPredict()
 }
 
 function onPhase(phase, prevPhase, s) {
@@ -346,26 +387,36 @@ function onPhase(phase, prevPhase, s) {
   if (phase === 'intro') {
     // Line the countdown up with the host's music-start moment.
     const localMusic = r.musicAt - client.offset
-    audio.play(roundTrack(r.track), localMusic)
+    audio.play(r.m === 1 ? 'final' : roundTrack(r.track), localMusic)
     previewing = false
     for (const n of [3, 2, 1]) {
       const at = localMusic - n * 1000 - Date.now()
       if (at > -200) countdownTimers.push(setTimeout(() => { banner(String(n)); audio.sfx('tick') }, Math.max(0, at)))
     }
     countdownTimers.push(setTimeout(() => banner('DANCE!'), Math.max(0, localMusic - Date.now())))
-    if (r.no === 1) toast(`${r.m} chairs · ${Object.values(s.status).filter((x) => x.alive).length} dancers`)
+    if (r.no === 1) {
+      const L = LEVELS[r.level] || LEVELS[DEFAULT_LEVEL]
+      banner(`LEVEL ${r.level}`)
+      toast(`Level ${r.level} of ${TOTAL_LEVELS}: ${L.name} · ${L.blurb}`)
+    } else if (r.thrones?.length) toast(`👑 ${r.thrones.length} throne${r.thrones.length > 1 ? 's' : ''} · 🥈 ${r.silvers?.length || 0} silver · ✨ gold & silver tiles pay extra`)
   } else if (phase === 'music') {
-    if (!audio.playing) audio.play(roundTrack(r.track), r.musicAt - client.offset)
+    if (!audio.playing) audio.play(r.m === 1 ? 'final' : roundTrack(r.track), r.musicAt - client.offset)
   } else if (phase === 'scramble') {
     audio.stop(true)
-    renderer.flash('#ff2f4f', 0.55)
-    renderer.bump(18)
-    banner('SIT!!!', true)
+    renderer.flash('#ff2f4f', 0.18)
+    banner('SIT!', true)
   } else if (phase === 'result') {
     audio.stop(false)
     showResult(s)
+  } else if (phase === 'levelup') {
+    audio.stop(false)
+    renderer.pops = []
+    renderer.confetti(140)
+    audio.sfx('win')
+    showLevelUp(s)
   } else if (phase === 'winner') {
     audio.stop(false)
+    renderer.pops = []
     renderer.confetti()
     audio.sfx('win')
     showWinner(s)
@@ -410,14 +461,89 @@ function showResult(s) {
   }
   const alive = Object.values(s.status).filter((x) => x.alive).length
   const p = document.createElement('p')
-  p.textContent = alive <= 1 ? 'And then there was one…' : `${alive} left · next round ${s.nextChairs} chair${s.nextChairs === 1 ? '' : 's'}`
+  p.textContent = alive <= 1
+    ? (s.level >= s.levels ? 'That was the final level!' : `Level ${s.level} done. Everyone's back in for level ${s.level + 1}!`)
+    : `${alive} left · next round ${s.nextChairs} chair${s.nextChairs === 1 ? '' : 's'}`
   card.appendChild(p)
+  // the round's highlights
+  const facts = document.createElement('div')
+  facts.className = 'facts'
+  if (s.levelChamp) facts.append(fact('🏅', `<b>${esc(nameOf(s.levelChamp))}</b> wins level ${s.level}! <b>+${POINTS.levelWin}</b>`))
+  const fast = s.round?.fastest
+  if (fast) facts.append(fact('⚡', `Fastest: <b>${esc(nameOf(fast.id))}</b> in ${(fast.ms / 1000).toFixed(2)}s`))
+  for (const [id, st] of Object.entries(s.status)) {
+    const tag = BONUS_TAGS[st.bonus]
+    if (tag) facts.append(fact(tag.icon, `<b>${esc(nameOf(id))}</b> ${tag.verb}`))
+  }
+  const mine = s.status[client.me]
+  if (mine && !client.roster.get(client.me)?.spectator) {
+    if (mine.gain) facts.append(fact('⭐', `You scored <b>+${mine.gain}</b>${mine.streak > 1 ? ` · 🔥 ${mine.streak}-round streak` : ''} · total <b>${mine.pts}</b>`))
+    if (mine.pred === 'hit') { facts.append(fact('🔮', `You called it! <b>+200</b>`)); audio.sfx('win') }
+    else if (mine.pred === 'miss') facts.append(fact('🔮', `Not this time: you picked ${esc(nameOf(mine.pick))}`))
+  }
+  if (facts.childNodes.length) card.appendChild(facts)
   if (meOut) {
     const q = document.createElement('p')
-    q.textContent = 'Stick around and cheer the others on with reactions 🎉'
+    q.textContent = alive <= 1 ? 'Your points are safe, and you\'re back in next level!' : "You keep your points! Call who goes out next to score more 🔮 — you're back in next level"
     card.appendChild(q)
   }
   $('overlay').hidden = false
+}
+
+// Top three by points, then a few awards.
+function podium(s) {
+  const box = document.createElement('div')
+  box.className = 'podium'
+  const players = [...client.roster.values()].filter((p) => !p.spectator && s.status[p.id] && !s.status[p.id].waiting)
+  const ranked = players.slice().sort((a, b) => s.status[b.id].pts - s.status[a.id].pts)
+  const steps = document.createElement('div')
+  steps.className = 'steps'
+  ;[1, 0, 2].forEach((rank) => {
+    const p = ranked[rank]
+    if (!p) return
+    const col = document.createElement('div')
+    col.className = 'step r' + (rank + 1) + (p.id === client.me ? ' me' : '')
+    col.append(avatarEl(p.avatar, 40))
+    const n = document.createElement('b')
+    n.textContent = p.name
+    const pts = document.createElement('span')
+    pts.textContent = s.status[p.id].pts + ' pts'
+    const block = document.createElement('i')
+    block.textContent = ['🥇', '🥈', '🥉'][rank]
+    col.append(n, pts, block)
+    steps.appendChild(col)
+  })
+  box.appendChild(steps)
+  const myRank = ranked.findIndex((p) => p.id === client.me)
+  if (myRank >= 3) box.append(fact('📊', `You finished <b>#${myRank + 1}</b> with ${s.status[client.me].pts} pts`))
+  const st = (p) => s.status[p.id]
+  const top = (list, by) => list.slice().sort(by)[0]
+  const quick = top(players.filter((p) => st(p).bestSit != null), (a, b) => st(a).bestSit - st(b).bestSit)
+  if (quick) box.append(fact('⚡', `Quickest sit: <b>${esc(quick.name)}</b> ${(st(quick).bestSit / 1000).toFixed(2)}s`))
+  const streak = top(players.filter((p) => st(p).bestStreak > 1), (a, b) => st(b).bestStreak - st(a).bestStreak)
+  if (streak) box.append(fact('🔥', `Longest streak: <b>${esc(streak.name)}</b> · ${st(streak).bestStreak} rounds`))
+  const seer = top(players.filter((p) => st(p).predHits > 0), (a, b) => st(b).predHits - st(a).predHits)
+  if (seer) box.append(fact('🔮', `Best fortune teller: <b>${esc(seer.name)}</b> · ${st(seer).predHits} called`))
+  const king = top(players.filter((p) => st(p).thrones > 0), (a, b) => st(b).thrones - st(a).thrones)
+  if (king) box.append(fact('👑', `Throne collector: <b>${esc(king.name)}</b> · ${st(king).thrones} throne${st(king).thrones > 1 ? 's' : ''}`))
+  const tiles = top(players.filter((p) => st(p).tiles > 0), (a, b) => st(b).tiles - st(a).tiles)
+  if (tiles) box.append(fact('✨', `Tile hunter: <b>${esc(tiles.name)}</b> · ${st(tiles).tiles} bonus tile${st(tiles).tiles > 1 ? 's' : ''}`))
+  const jack = top(players.filter((p) => st(p).jackpots > 0), (a, b) => st(b).jackpots - st(a).jackpots)
+  if (jack) box.append(fact('💎', `Jackpot hunter: <b>${esc(jack.name)}</b> · ${st(jack).jackpots} jackpot${st(jack).jackpots > 1 ? 's' : ''}`))
+  const lv = top(players.filter((p) => st(p).wins > 0), (a, b) => st(b).wins - st(a).wins)
+  if (lv) box.append(fact('🏅', `Most levels won: <b>${esc(lv.name)}</b> · ${st(lv).wins}`))
+  return box
+}
+
+function fact(icon, html) {
+  const d = document.createElement('div')
+  d.className = 'fact'
+  d.innerHTML = `<span>${icon}</span><span>${html}</span>`
+  return d
+}
+
+function esc(t) {
+  return String(t).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]))
 }
 
 function showWinner(s) {
@@ -425,11 +551,13 @@ function showWinner(s) {
   card.innerHTML = ''
   const h = document.createElement('h2')
   const champ = s.champion
-  h.textContent = champ === client.me ? '🏆 YOU WIN! 🏆' : `🏆 ${nameOf(champ)} wins!`
+  h.textContent = champ === client.me ? '🏆 YOU WIN! 🏆' : champ ? `🏆 ${nameOf(champ)} wins!` : 'Game over'
   card.appendChild(h)
   const p = document.createElement('p')
-  p.textContent = champ ? `Champion of the dance floor · ${s.status[champ]?.wins || 1} win${(s.status[champ]?.wins || 1) > 1 ? 's' : ''} tonight` : 'Game over'
+  const played = s.round?.level || s.level
+  p.textContent = champ ? `Most points after ${played >= s.levels ? `all ${s.levels} levels` : `${played} level${played > 1 ? 's' : ''}`} · ${s.status[champ]?.pts || 0} pts` : 'Game over'
   card.appendChild(p)
+  card.appendChild(podium(s))
   if (client.isHost) {
     const row = document.createElement('div')
     row.className = 'row'
@@ -451,13 +579,60 @@ function showWinner(s) {
   $('overlay').hidden = false
 }
 
+const BONUS_TAGS = {
+  jackpot: { pop: '💎 JACKPOT', banner: 'JACKPOT! 💎', verb: 'hit the JACKPOT: a throne on a gold tile', icon: '💎' },
+  royal: { pop: '👑 ROYAL', banner: 'ROYAL COMBO! 👑', verb: 'took a throne on a silver tile', icon: '👑' },
+  golden: { pop: '🥈✨ COMBO', banner: 'SILVER ON GOLD! ✨', verb: 'took a silver chair on a gold tile', icon: '✨' },
+  sterling: { pop: '🥈 STERLING', banner: 'STERLING COMBO! 🥈', verb: 'took a silver chair on a silver tile', icon: '🥈' },
+  throne: { pop: '👑 THRONE', banner: 'THRONE! 👑', verb: 'took a throne', icon: '👑' },
+  silver: { pop: '🥈 SILVER', banner: 'SILVER CHAIR! 🥈', verb: 'took a silver chair', icon: '🥈' },
+  gold: { pop: '✨ GOLD', banner: 'GOLD TILE! ✨', verb: 'sat on a gold tile', icon: '✨' },
+  silvertile: { pop: '◇ SILVER TILE', banner: 'SILVER TILE! ◇', verb: 'sat on a silver tile', icon: '◇' },
+}
+
+// Between levels: who won it, the leaderboard so far, and what's next.
+function showLevelUp(s) {
+  const card = $('overlay-card')
+  card.innerHTML = ''
+  const h = document.createElement('h2')
+  h.textContent = `Level ${s.level} complete!`
+  card.appendChild(h)
+  if (s.levelChamp) {
+    const w = document.createElement('div')
+    w.className = 'booted-list'
+    w.appendChild(chip(s.levelChamp))
+    card.appendChild(w)
+    const p = document.createElement('p')
+    p.textContent = `${s.levelChamp === client.me ? 'You' : nameOf(s.levelChamp)} won the level · +${POINTS.levelWin}`
+    card.appendChild(p)
+  }
+  card.appendChild(leaderboard(s, 5))
+  const next = LEVELS[s.level + 1]
+  const n = document.createElement('p')
+  n.className = 'next-level'
+  n.innerHTML = `Everyone's back in! Next up: <b>Level ${s.level + 1} · ${esc(next?.name || '')}</b> · ${esc(next?.blurb || '')}`
+  card.appendChild(n)
+  $('overlay').hidden = false
+}
+
+function leaderboard(s, max) {
+  const box = document.createElement('div')
+  box.className = 'facts'
+  const ranked = [...client.roster.values()].filter((p) => !p.spectator && s.status[p.id] && !s.status[p.id].waiting)
+    .sort((a, b) => s.status[b.id].pts - s.status[a.id].pts)
+  ranked.slice(0, max).forEach((p, i) => box.append(fact(['🥇', '🥈', '🥉'][i] || `#${i + 1}`, `<b>${esc(p.name)}</b> · ${s.status[p.id].pts} pts`)))
+  const me = ranked.findIndex((p) => p.id === client.me)
+  if (me >= max) box.append(fact('📊', `You're <b>#${me + 1}</b> with ${s.status[client.me].pts} pts`))
+  return box
+}
+
 function updateHud() {
   const s = client?.state
   if (!s || s.phase === 'lobby') return
   const r = s.round
   const alive = Object.values(s.status).filter((x) => x.alive).length
-  const lvl = r ? 1 + Math.round(difficulty(r.m, r.start) * 9) : 1
-  $('hud-round').textContent = r ? `Round ${r.no} · ${LAYOUT_NAMES[r.layout] || ''} · 🔥 Lv ${lvl}` : ''
+  const lvl = r?.level || DEFAULT_LEVEL
+  $('hud-round').textContent = r ? `Level ${lvl}/${s.levels || TOTAL_LEVELS} ${LEVELS[lvl]?.name || ''} · Round ${r.no} · ${LAYOUT_NAMES[r.layout] || ''}` : ''
   const hz = (client.round?.hazards || []).map((h) => HAZARD_NAMES[h]).join(' · ')
   const free = s.owners.filter((o) => !o).length
   $('hud-count').textContent = `👥 ${alive} · 🪑 ${s.phase === 'scramble' ? `${free} free` : r?.m ?? 0}`
@@ -481,40 +656,144 @@ function updateHud() {
     if (me?.alive && me.seat < 0) {
       hint.hidden = false
       const touch = matchMedia('(pointer: coarse)').matches
-      if (s.round?.motion === 'wild') hint.textContent = touch ? 'Chairs are running wild! Keep tapping to chase one!' : 'Chairs are running wild! Keep clicking / steering to catch one!'
-      else hint.textContent = (s.round?.motion === 'drift' ? 'Chairs are drifting! ' : '') + (touch ? 'Tap a chair to chase it!' : 'WASD / arrows, or click a chair to chase it!')
-      if (hz) hint.textContent += ` ⚠️ ${hz}`
+      hint.textContent = touch ? 'Tap a free chair to grab it!' : 'Click a free chair to grab it (or steer with WASD / arrows)'
     }
   } else if (s.phase === 'result') st.textContent = 'Round over'
+  else if (s.phase === 'levelup') st.textContent = `⬆️ Level ${s.level + 1} coming up`
   else if (s.phase === 'winner') st.textContent = '🏆 We have a champion'
-  if (me && !me.alive && s.phase !== 'winner' && s.phase !== 'result') {
+  if (me && !me.alive && !['winner', 'result', 'levelup'].includes(s.phase)) {
     hint.hidden = false
-    hint.textContent = me.waiting ? 'Game in progress — you\'ll join the next one!' : 'You\'re out — cheer them on! 🎉'
+    hint.textContent = me.waiting ? 'Game in progress — you\'ll join at the next level!' : 'Out this level, back in next! Keep scoring: call who\'s next 🔮'
   }
   const dj = client.isHost && s.phase === 'music'
   $('stop-btn').hidden = !dj
+  $('end-btn').hidden = s.phase === 'winner'
+}
+
+// The jumbotron: every player's name and where they stand right now.
+function playerState(s, p, st) {
+  if (st.waiting) return ['NEXT LEVEL', 'wait']
+  if (s.phase === 'winner') return s.champion === p.id ? ['CHAMPION', 'champ'] : ['FINISHED', 'out']
+  if (s.phase === 'levelup') return s.levelChamp === p.id ? ['LEVEL WIN', 'champ'] : ['BACK IN', 'dancing']
+  if (!st.alive) {
+    if (s.phase === 'result' && s.booted?.includes(p.id)) return ['BOOTED!', 'booted']
+    return [st.out ? `OUT · R${st.out}` : 'OUT', 'out']
+  }
+  if (s.phase === 'scramble') return st.seat >= 0 ? ['SEATED', 'seated'] : ['RUNNING', 'running']
+  if (s.phase === 'result') return s.booted?.includes(p.id) ? ['BOOTED!', 'booted'] : ['SAFE', 'seated']
+  if (s.phase === 'music') return ['DANCING', 'dancing']
+  return ['READY', 'dancing']
 }
 
 function renderSideRoster() {
   const box = $('side-roster')
   const s = client?.state
   if (!s || !client.roster) return
-  box.innerHTML = ''
   const list = [...client.roster.values()].filter((p) => !p.spectator && s.status[p.id])
-  list.sort((a, b) => (s.status[b.id].alive - s.status[a.id].alive) || (s.status[b.id].out - s.status[a.id].out))
-  for (const p of list.slice(0, 24)) {
+  const rank = (p) => {
     const st = s.status[p.id]
-    const d = document.createElement('div')
-    if (!st.alive) d.className = 'out'
-    d.append(avatarEl(p.avatar, 44), p.name)
-    if (st.alive && st.seat >= 0 && s.phase === 'scramble') {
-      const ok = document.createElement('span')
-      ok.className = 'seat'
-      ok.textContent = '✔'
-      d.append(ok)
-    }
-    if (st.wins) d.append(' 🏆'.repeat(Math.min(3, st.wins)))
-    box.appendChild(d)
+    if (s.phase === 'winner' || s.phase === 'levelup') return 0 // straight points ranking
+    if (st.alive) return st.seat >= 0 && s.phase === 'scramble' ? 1 : 2
+    if (st.waiting) return 5
+    return 3 + (st.out ? 1 - st.out / 1000 : 1)
+  }
+  list.sort((a, b) => rank(a) - rank(b) || (s.status[b.id].pts || 0) - (s.status[a.id].pts || 0) || a.name.localeCompare(b.name))
+  const alive = list.filter((p) => s.status[p.id].alive).length
+  const out = list.filter((p) => !s.status[p.id].alive && !s.status[p.id].waiting).length
+  box.innerHTML = ''
+  const head = document.createElement('div')
+  head.className = 'jt-head'
+  head.innerHTML = `<span>MUSICAL CHAIRS</span><b>${s.round ? `LEVEL ${s.round.level}/${s.levels} · R${s.round.no}` : ''}</b>`
+  const sub = document.createElement('div')
+  sub.className = 'jt-sub'
+  sub.innerHTML = s.phase === 'winner' ? '<b>FINAL SCORES</b>' : s.phase === 'levelup' ? `<b>STANDINGS</b> <i>·</i> LEVEL ${s.level + 1} NEXT` : `<b>${alive}</b> STILL IN <i>·</i> <b class="o">${out}</b> OUT`
+  const rows = document.createElement('div')
+  rows.className = 'jt-list'
+  const MAX = 22
+  for (const p of list.slice(0, MAX)) {
+    const st = s.status[p.id]
+    const [label, cls] = playerState(s, p, st)
+    const row = document.createElement('div')
+    row.className = 'jt-row st-' + cls + (p.id === client.me ? ' me' : '')
+    const dot = document.createElement('i')
+    dot.style.background = p.color
+    const name = document.createElement('span')
+    name.className = 'jt-name'
+    name.textContent = p.name + (st.wins ? ' ' + '🏆'.repeat(Math.min(3, st.wins)) : '')
+    const pts = document.createElement('span')
+    pts.className = 'jt-pts'
+    pts.textContent = st.pts || 0
+    const tag = document.createElement('span')
+    tag.className = 'jt-st'
+    tag.textContent = label
+    row.append(dot, name, pts, tag)
+    rows.appendChild(row)
+  }
+  if (list.length > MAX) {
+    const more = document.createElement('div')
+    more.className = 'jt-more'
+    more.textContent = `+${list.length - MAX} more`
+    rows.appendChild(more)
+  }
+  box.append(head, sub, rows)
+}
+
+// Out players: "Who's out next?" Pick someone during the countdown or the
+// music; it locks when the music stops; a correct call scores 200.
+function renderPredict() {
+  const box = $('predict')
+  const s = client?.state
+  const me = s?.status?.[client.me]
+  const open = s && me && !me.alive && !client.roster.get(client.me)?.spectator && (s.phase === 'intro' || s.phase === 'music' || s.phase === 'scramble')
+  if (!open) { box.hidden = true; return }
+  const alive = [...client.roster.values()].filter((p) => s.status[p.id]?.alive)
+  if (alive.length < 2) { box.hidden = true; return }
+  const locked = s.phase === 'scramble'
+  box.hidden = false
+  box.innerHTML = ''
+  const h = document.createElement('div')
+  h.className = 'pr-head'
+  h.innerHTML = locked
+    ? (me.pick ? `🔮 You picked <b>${esc(nameOf(me.pick))}</b>. Fingers crossed!` : '🔮 Too late to pick this round')
+    : '🔮 <b>Who\'s out next?</b> Call it for +200'
+  box.appendChild(h)
+  if (locked) return
+  const row = document.createElement('div')
+  row.className = 'pr-row'
+  for (const p of alive) {
+    const b = document.createElement('button')
+    b.type = 'button'
+    b.className = me.pick === p.id ? 'on' : ''
+    b.append(avatarEl(p.avatar, 26), p.name)
+    b.onclick = () => { client.pick(p.id); audio.sfx('lock') }
+    row.appendChild(b)
+  }
+  box.appendChild(row)
+}
+
+// Hurry-up timer: counts down the time left to grab a chair once the music
+// stops, turning amber then red, ticking (and buzzing) through the last 3s.
+let lastTickSec = -1
+function renderTimer() {
+  const box = $('timer')
+  const s = client?.state
+  const r = s?.round
+  if (!s || s.phase !== 'scramble' || !r?.scrambleEnd || s.settle) { box.hidden = true; lastTickSec = -1; return }
+  const me = s.status[client.me]
+  const hunting = me?.alive && me.seat < 0
+  const total = r.scrambleEnd - r.stopAt
+  const left = Math.max(0, r.scrambleEnd - client.hostNow())
+  const secs = Math.ceil(left / 1000)
+  const frac = left / total
+  box.hidden = false
+  box.className = 'timer' + (frac < 0.25 ? ' red' : frac < 0.55 ? ' amber' : '') + (hunting ? ' me' : '')
+  $('timer-n').textContent = secs
+  $('timer-label').textContent = !me?.alive ? 'left to sit' : me.seat >= 0 ? "you're safe!" : secs <= 3 ? 'HURRY!' : 'grab a chair!'
+  $('timer-bar').style.width = (frac * 100).toFixed(1) + '%'
+  if (hunting && secs <= 3 && secs > 0 && secs !== lastTickSec) {
+    lastTickSec = secs
+    audio.sfx('tick')
+    try { navigator.vibrate?.(15) } catch {}
   }
 }
 
@@ -533,24 +812,29 @@ window.addEventListener('keyup', (e) => { if (client) client.input.keys.delete(e
 window.addEventListener('blur', () => client && client.input.keys.clear())
 
 let dragging = false
-function aim(e) {
+// Clicks and taps only count once the music stops; during the dance they're ignored.
+function aim(e, fresh) {
   if (!client || client.state?.phase !== 'scramble') return
-  const p = renderer.toWorld(e.clientX, e.clientY)
-  // Snap to a chair if you clicked on (or near) one.
-  const chairs = client.chairPoints()
-  // Wild chairs: a click is just a spot to run to — by the time you get there
-  // the chair has moved on, so you have to keep hunting. Calmer modes lock on.
-  if (client.state.round?.motion === 'wild') return client.setTarget(p)
-  let best = -1
-  let bd = CHAIR_RADIUS * 2
-  chairs.forEach((c, i) => {
-    const d = Math.hypot(c.x - p.x, c.y - p.y)
-    if (d < bd && !client.state.owners[i]) { bd = d; best = i }
-  })
-  client.setTarget(best >= 0 ? { chair: best } : p)
+  const me = client.status()
+  if (!me?.alive || me.seat >= 0) return
+  // Click ON a chair (anywhere on its picture, not just its floor spot) to
+  // lock on: you chase it until you sit. Anywhere else: run to that spot.
+  const touch = e.pointerType === 'touch'
+  const i = renderer.pickChair(e.clientX, e.clientY, client, touch ? 1.6 : 1.25)
+  const cur = client.input.target
+  if (i >= 0) {
+    // grab it: sit straight away, with a little buzz on phones
+    if (fresh && client.grab(i)) {
+      audio.sfx('lock')
+      try { navigator.vibrate?.(35) } catch {}
+    }
+  } else if (fresh) {
+    const p = renderer.toWorld(e.clientX, e.clientY)
+    if (client.setTarget(p) && fresh) renderer.spotFx(p)
+  }
 }
-$('stage').addEventListener('pointerdown', (e) => { dragging = true; aim(e) })
-window.addEventListener('pointermove', (e) => { if (dragging) aim(e) })
+$('stage').addEventListener('pointerdown', (e) => { dragging = true; aim(e, true) })
+window.addEventListener('pointermove', (e) => { if (dragging) aim(e, false) })
 window.addEventListener('pointerup', () => { dragging = false })
 
 // --- Frame loop -------------------------------------------------------------------------
@@ -568,8 +852,19 @@ function frame(now) {
     while (rem > 1e-4) { const step = Math.min(0.05, rem); client.update(step); rem -= step }
   }
   prevFrame = now
-  renderer.padRight = client?.state?.phase === 'lobby' && innerWidth > 820 ? 400 : 0
+  const ph = client?.state?.phase
+  if (ph === 'lobby') {
+    renderer.padLeft = 0
+    renderer.padRight = innerWidth > 820 ? 400 : 0
+  } else if (innerWidth > 820) {
+    // Wide, equal margins so the player list down the left never covers the board.
+    // room for the jumbotron on the left, and enough on the right that the
+    // deck's front-right corner (and its tiki torch) stays on screen
+    renderer.padLeft = Math.min(($('side-roster').offsetWidth || 0) + 16, innerWidth * 0.26)
+    renderer.padRight = Math.min(90, innerWidth * 0.07)
+  } else renderer.padLeft = renderer.padRight = 0
   renderer.draw(client, { dt, pulse: audio.pulse(Date.now()), phaseAge: (now - phaseStart) / 1000 })
+  renderTimer()
   if ((hudTick += dt) > 0.25) { hudTick = 0; if (client?.state?.phase === 'music') updateHud() }
   requestAnimationFrame(frame)
 }

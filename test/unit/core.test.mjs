@@ -90,14 +90,21 @@ test('chairs spin during the music and are identical for everyone at the stop mo
   assert.ok(Math.abs(d(c0) - d(c5)) < 1e-9)
 })
 
-test('music duration is random but within bounds', () => {
+test('music duration is unpredictable: some sudden stops, some long plays, mostly in between', () => {
   const rand = rng(3)
-  for (let i = 0; i < 500; i++) {
+  let short = 0
+  let long = 0
+  const n = 1000
+  for (let i = 0; i < n; i++) {
     const c = musicDuration(rand, 'classic')
     const t = musicDuration(rand, 'turbo')
-    assert.ok(c >= 11000 && c <= 26000)
-    assert.ok(t >= 8000 && t <= 17000)
+    assert.ok(c >= 3500 && c <= 40000, `classic ${c}`)
+    assert.ok(t >= 3500 * 0.7 && t <= 40000 * 0.7, `turbo ${t}`)
+    if (c <= 7000) short++
+    if (c >= 26000) long++
   }
+  assert.ok(short > n * 0.12 && short < n * 0.28, `sudden stops ${short}/${n}`)
+  assert.ok(long > n * 0.12 && long < n * 0.28, `long plays ${long}/${n}`)
 })
 
 test('random scatter: different every round, identical for everyone, never overlapping', async () => {
@@ -139,7 +146,7 @@ test('every round plays a rave track with a hook, and every track gets played', 
 })
 
 test('moving chairs: start exactly where they froze, stay on the floor, and are always catchable', async () => {
-  const { chairMotion, MOVE_SPEED } = await import('../../src/core.js')
+  const { chairMotion, MOVE_SPEED, insideBoard } = await import('../../src/core.js')
   for (const motion of ['drift', 'wild']) {
     for (const [layout, m] of [['ring', 3], ['scatter', 9], ['sunflower', 20], ['ring', 39], ['scatter', 59]]) {
       const chairs = chairLayout(layout, m, 42)
@@ -151,7 +158,7 @@ test('moving chairs: start exactly where they froze, stay on the floor, and are 
         for (let f = 1; f <= 60 * 12; f++) {
           const p = chairMotion(c, i, f / 60, motion, arena)
           fastest = Math.max(fastest, Math.hypot(p.x - prev.x, p.y - prev.y) * 60)
-          assert.ok(Math.hypot(p.x, p.y) <= arena, 'chair left the floor')
+          assert.ok(insideBoard(p, arena), 'chair left the floor')
           prev = p
         }
       })
@@ -164,10 +171,10 @@ test('moving chairs: start exactly where they froze, stay on the floor, and are 
 })
 
 test('wild chairs roam the whole floor during AND after the music, never resting, always catchable', async () => {
-  const { chairsAtTime, MOVE_SPEED } = await import('../../src/core.js')
+  const { chairsAtTime, MOVE_SPEED, insideBoard, boardSize } = await import('../../src/core.js')
   for (const [n, seed] of [[3, 11], [6, 202], [12, 3003], [30, 40404]]) {
     const r = buildRound(seed, 1, Array.from({ length: n }, (_, i) => 'p' + i), 'classic')
-    const round = { ...r, motion: 'wild', musicAt: 10_000, stopAt: 25_000 }
+    const round = { ...r, level: 4, motion: 'wild', musicAt: 10_000, stopAt: 25_000 }
     const atStart = chairsAtTime(round, 10_000)
     assert.deepEqual(atStart.map((c) => [c.x, c.y]), r.chairs.map((c) => [c.x, c.y]), 'round opens in its layout shape')
     // sample every chair across 40s (music + scramble)
@@ -184,7 +191,7 @@ test('wild chairs roam the whole floor during AND after the music, never resting
         fastest = Math.max(fastest, v)
         rest[i] = v < 5 ? rest[i] + 1 / 60 : 0
         longestRest = Math.max(longestRest, rest[i])
-        assert.ok(Math.hypot(p.x, p.y) <= r.arena, 'chair left the floor')
+        assert.ok(insideBoard(p, r.arena), 'chair left the board')
         const b = seen[i]
         b.minX = Math.min(b.minX, p.x); b.maxX = Math.max(b.maxX, p.x)
         b.minY = Math.min(b.minY, p.y); b.maxY = Math.max(b.maxY, p.y)
@@ -193,59 +200,76 @@ test('wild chairs roam the whole floor during AND after the music, never resting
     }
     assert.ok(fastest < MOVE_SPEED * 3.8, `n=${n}: chairs top out at ${fastest.toFixed(0)} u/s (players ${MOVE_SPEED}) — fast, but no teleporting`)
     assert.ok(longestRest < 0.4, `n=${n}: no chair rests longer than ${longestRest.toFixed(2)}s`)
+    const { hx, hy } = boardSize(r.arena)
     for (const b of seen) {
-      assert.ok(b.maxX - b.minX > r.arena * 0.8 && b.maxY - b.minY > r.arena * 0.8, `n=${n}: every chair roams across the floor`)
+      assert.ok(b.maxX - b.minX > hx * 0.7 && b.maxY - b.minY > hy * 0.7, `n=${n}: every chair roams across the board`)
     }
+    // ...and right into the corners
+    let corners = 0
+    for (const [cx, cy] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) {
+      let hit = false
+      for (let f = 0; f < 60 * 40 && !hit; f += 6) {
+        for (const p of chairsAtTime(round, 10_000 + (f * 1000) / 60)) {
+          if (p.x * cx > hx * 0.7 && p.y * cy > hy * 0.65) { hit = true; break }
+        }
+      }
+      if (hit) corners++
+    }
+    assert.equal(corners, 4, `n=${n}: chairs visit all four corners`)
     // the identical path no matter how you query it (cache-independent)
     const later = chairsAtTime({ ...round, seed: seed }, 33_333)
     assert.deepEqual(later, chairsAtTime(round, 33_333))
   }
 })
 
-test('wild chairs never slow down when the music stops, and a determined chaser can still catch one', async () => {
-  const { chairsAtTime, MOVE_SPEED, SIT_DISTANCE } = await import('../../src/core.js')
-  for (const [n, seed] of [[2, 7], [3, 11], [12, 3003]]) {
-    const r = buildRound(seed, 1, Array.from({ length: n }, (_, i) => 'p' + i), 'classic')
-    const round = { ...r, motion: 'wild', musicAt: 0, stopAt: 15_000 }
-    const avgSpeed = (from, to) => {
-      let sum = 0
-      let cnt = 0
-      let prev = chairsAtTime(round, from)
-      for (let t = from + 1000 / 60; t <= to; t += 1000 / 60) {
-        const pts = chairsAtTime(round, t)
-        pts.forEach((p, i) => { sum += Math.hypot(p.x - prev[i].x, p.y - prev[i].y) * 60; cnt++ })
-        prev = pts
+test('game level sets the chair pace: low levels slow down at the stop, Insane speeds up, all catchable', async () => {
+  const { chairsAtTime, MOVE_SPEED, SIT_DISTANCE, boardSize } = await import('../../src/core.js')
+  for (const level of [1, 2, 3, 4, 5]) {
+    for (const [n, seed] of [[2, 7], [3, 11], [12, 3003]]) {
+      const r = buildRound(seed, 1, Array.from({ length: n }, (_, i) => 'p' + i), 'classic')
+      const round = { ...r, level, motion: 'wild', musicAt: 0, stopAt: 15_000 }
+      const avgSpeed = (from, to) => {
+        let sum = 0
+        let cnt = 0
+        let prev = chairsAtTime(round, from)
+        for (let t = from + 1000 / 60; t <= to; t += 1000 / 60) {
+          const pts = chairsAtTime(round, t)
+          pts.forEach((p, i) => { sum += Math.hypot(p.x - prev[i].x, p.y - prev[i].y) * 60; cnt++ })
+          prev = pts
+        }
+        return sum / cnt
       }
-      return sum / cnt
-    }
-    const before = avgSpeed(5_000, 15_000)
-    const after = avgSpeed(15_000, 25_000)
-    assert.ok(after > before * 1.1, `n=${n}: chairs speed up after the stop (${before.toFixed(0)} -> ${after.toFixed(0)} u/s)`)
-    assert.ok(after > MOVE_SPEED * 0.75, `n=${n}: scramble chairs are genuinely fast (${after.toFixed(0)} u/s)`)
-    // A chaser who aims a quarter-second ahead gets a chair within the scramble window.
-    let caught = 0
-    for (let b = 0; b < 8; b++) {
-      const me = { x: Math.cos(b) * r.arena * 0.6, y: Math.sin(b) * r.arena * 0.6 }
-      for (let f = 0; f < 60 * 10; f++) {
-        const t = 15_000 + (f * 1000) / 60
-        const pts = chairsAtTime(round, t)
-        const near = pts.reduce((bi, p, i) => (Math.hypot(p.x - me.x, p.y - me.y) < Math.hypot(pts[bi].x - me.x, pts[bi].y - me.y) ? i : bi), 0)
-        if (Math.hypot(pts[near].x - me.x, pts[near].y - me.y) <= SIT_DISTANCE) { caught++; break }
-        const tg = chairsAtTime(round, t + 250)[near]
-        const d = Math.hypot(tg.x - me.x, tg.y - me.y) || 1
-        me.x += ((tg.x - me.x) / d) * (MOVE_SPEED / 60)
-        me.y += ((tg.y - me.y) / d) * (MOVE_SPEED / 60)
+      const before = avgSpeed(5_000, 15_000)
+      const after = avgSpeed(15_000, 25_000)
+      if (level <= 2) assert.ok(after < before * 0.8, `L${level} n=${n}: chairs slow down after the stop (${before.toFixed(0)} -> ${after.toFixed(0)} u/s)`)
+      if (level === 5) assert.ok(after > before * 1.1, `L5 n=${n}: chairs speed up after the stop (${before.toFixed(0)} -> ${after.toFixed(0)} u/s)`)
+      assert.ok(after > 40, `L${level} n=${n}: chairs still move after the stop (${after.toFixed(0)} u/s)`)
+      // A chaser who aims a quarter-second ahead gets a chair within the scramble window.
+      const { hx, hy } = boardSize(r.arena)
+      let caught = 0
+      for (let b = 0; b < 8; b++) {
+        const me = { x: Math.cos(b) * hx * 0.6, y: Math.sin(b) * hy * 0.6 }
+        for (let f = 0; f < 60 * 10; f++) {
+          const t = 15_000 + (f * 1000) / 60
+          const pts = chairsAtTime(round, t)
+          const near = pts.reduce((bi, p, i) => (Math.hypot(p.x - me.x, p.y - me.y) < Math.hypot(pts[bi].x - me.x, pts[bi].y - me.y) ? i : bi), 0)
+          if (Math.hypot(pts[near].x - me.x, pts[near].y - me.y) <= SIT_DISTANCE) { caught++; break }
+          const tg = chairsAtTime(round, t + 250)[near]
+          const d = Math.hypot(tg.x - me.x, tg.y - me.y) || 1
+          me.x += ((tg.x - me.x) / d) * (MOVE_SPEED / 60)
+          me.y += ((tg.y - me.y) / d) * (MOVE_SPEED / 60)
+        }
       }
+      assert.ok(caught >= 6, `L${level} n=${n}: ${caught}/8 chasers caught a chair`)
     }
-    assert.ok(caught >= 6, `n=${n}: ${caught}/8 chasers caught a chair`)
   }
 })
 
-test('it gets harder as players are booted: faster chairs, more hazards, bigger floor for big crowds', async () => {
-  const { chairsAtTime, difficulty, roundHazards, HAZARDS, arenaFor } = await import('../../src/core.js')
-  const speedFor = (n) => {
-    const r = buildRound(99, 1, Array.from({ length: n }, (_, i) => 'p' + i), 'classic')
-    const round = { ...r, motion: 'wild', musicAt: 0, stopAt: 10_000 }
+test('higher game levels: faster chairs and more obstacles; low levels keep the floor clear', async () => {
+  const { chairsAtTime, roundHazards, HAZARDS, arenaFor, LEVELS } = await import('../../src/core.js')
+  const speedFor = (level) => {
+    const r = buildRound(99, 1, Array.from({ length: 6 }, (_, i) => 'p' + i), 'classic')
+    const round = { ...r, level, motion: 'wild', musicAt: 0, stopAt: 10_000 }
     let sum = 0
     let cnt = 0
     let prev = chairsAtTime(round, 10_000)
@@ -256,25 +280,53 @@ test('it gets harder as players are booted: faster chairs, more hazards, bigger 
     }
     return sum / cnt
   }
-  assert.ok(speedFor(2) > speedFor(20) * 1.2, `final chair (${speedFor(2).toFixed(0)}) is faster than round-one chairs (${speedFor(20).toFixed(0)})`)
-  assert.equal(difficulty(1), 1)
-  assert.equal(difficulty(19), 0)
-  let few = 0
-  let many = 0
+  for (let l = 1; l < 5; l++) assert.ok(speedFor(l + 1) > speedFor(l), `level ${l + 1} chairs are faster than level ${l}`)
+  assert.ok(speedFor(5) > speedFor(1) * 2, `Insane (${speedFor(5).toFixed(0)}) is much faster than Chill (${speedFor(1).toFixed(0)})`)
   for (let s = 0; s < 50; s++) {
-    const a = roundHazards(s, 19, 1)
-    const b = roundHazards(s, 1, 8)
-    assert.ok(a.every((h) => HAZARDS.includes(h)))
-    assert.deepEqual(roundHazards(s, 1, 8), b, 'hazards are deterministic')
-    few += a.length
-    many += b.length
+    assert.deepEqual(roundHazards(s, 1), [], 'Chill: no obstacles')
+    let prevN = 0
+    for (const l of [2, 3, 4, 5]) {
+      const h = roundHazards(s, l)
+      assert.ok(h.every((x) => HAZARDS.includes(x)))
+      assert.deepEqual(roundHazards(s, l), h, 'hazards are deterministic')
+      assert.equal(h.length, LEVELS[l].hazards)
+      assert.ok(h.length > prevN, 'more obstacles at each level')
+      prevN = h.length
+    }
+    for (const l of [2, 3, 4]) for (const h of roundHazards(s, l)) assert.ok(!['fog', 'darkness', 'blackout', 'smoke', 'lasers', 'spin'].includes(h), `level ${l} only uses light obstacles`)
   }
-  assert.ok(many > few * 2, `final rounds stack more hazards (${many / 50} vs ${few / 50})`)
   assert.ok(arenaFor(200, 20) - arenaFor(200, 5) > 300, 'floor grows with the crowd')
-  // relative to the starting crowd: round one is calm, the final is maximum
-  assert.equal(difficulty(4, 5), 0, '5-player game opens at level 0')
-  assert.equal(difficulty(1, 5), 1, 'and ends at max')
-  assert.equal(difficulty(19, 20), 0)
-  assert.ok(difficulty(10, 20) > 0.4 && difficulty(10, 20) < 0.6, 'half the field gone, halfway hard')
-  assert.equal(difficulty(1, 2), 1, 'a 2-player game is a straight final')
+})
+
+test('special chairs and bonus tiles: seeded, distinct, and combos beat singles', async () => {
+  const { specialChairs, bonusTiles, chairBonus, tileAt, tileKind, boardSize, BOARD_X, BOARD_Y, CHAIR_BONUS, TILE_BONUS } = await import('../../src/core.js')
+  for (const m of [1, 2, 3, 5, 12, 40]) {
+    const { thrones, silvers } = specialChairs(123, m)
+    assert.ok(thrones.length >= 1, `m=${m}: at least one throne`)
+    assert.ok(thrones.length < Math.max(2, m), 'not every chair is a throne')
+    assert.ok([...thrones, ...silvers].every((i) => i >= 0 && i < m))
+    assert.equal(new Set([...thrones, ...silvers]).size, thrones.length + silvers.length, 'a chair is a throne or silver, not both')
+    if (m >= 3) assert.ok(silvers.length >= 1, `m=${m}: silver chairs too`)
+    assert.deepEqual(specialChairs(123, m), { thrones, silvers }, 'deterministic')
+  }
+  const t = bonusTiles(7)
+  const key = ([i, j]) => i + ',' + j
+  assert.equal(new Set([...t.gold, ...t.silver].map(key)).size, t.gold.length + t.silver.length, 'gold and silver tiles never overlap')
+  assert.ok(t.gold.length > 0 && t.silver.length > t.gold.length)
+  for (const [i, j] of [...t.gold, ...t.silver]) assert.ok(i >= 0 && i < BOARD_X && j >= 0 && j < BOARD_Y)
+  assert.notDeepEqual(bonusTiles(8).gold, t.gold, 'new tiles every round')
+  // a point in the middle of a gold tile is on it
+  const arena = 900
+  const { hx, hy, tile } = boardSize(arena)
+  const [gi, gj] = t.gold[0]
+  const p = { x: -hx + (gi + 0.5) * tile, y: -hy + (gj + 0.5) * tile }
+  assert.deepEqual(tileAt(p, arena), [gi, gj])
+  assert.equal(tileKind(p, { arena, ...t }), 'gold')
+  // points ladder
+  const pts = (c, tl) => chairBonus(c, tl).pts
+  assert.equal(chairBonus('throne', 'gold').kind, 'jackpot')
+  assert.ok(CHAIR_BONUS.silver < CHAIR_BONUS.throne && TILE_BONUS.silver < TILE_BONUS.gold, 'silver pays a bit less than gold')
+  assert.ok(pts('throne', 'gold') > pts('throne', 'silver') && pts('throne', 'silver') > pts('silver', 'gold') && pts('silver', 'gold') > pts('silver', 'silver'))
+  for (const c of ['throne', 'silver']) for (const tl of ['gold', 'silver']) assert.ok(pts(c, tl) > pts(c, null) + pts(null, tl), `${c} on ${tl} is a real combo`)
+  assert.equal(pts(null, null), 0)
 })
