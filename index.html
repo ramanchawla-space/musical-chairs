@@ -1,0 +1,176 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no" />
+  <title>Musical Chairs — Party Edition</title>
+  <meta name="description" content="Multiplayer musical chairs for your team. Smooth music, a big checkerboard floor, one chair too few." />
+  <link rel="icon" href="favicon.svg" type="image/svg+xml" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Bungee&family=Monoton&family=Outfit:wght@400;600;700;800&display=swap" rel="stylesheet" />
+  <script type="module" crossorigin src="/musical-chairs/assets/index-Doe8bUb1.js"></script>
+  <link rel="stylesheet" crossorigin href="/musical-chairs/assets/index-DWow571a.css">
+</head>
+<body>
+  <canvas id="stage"></canvas>
+
+  <!-- HOME: profile + host/join -->
+  <section id="home" class="screen">
+    <div class="card home-card">
+      <h1 class="logo"><span>Musical</span><span>Chairs</span></h1>
+      <p class="tagline">PARTY EDITION · one chair too few</p>
+
+      <label class="field">
+        <span>Your nickname</span>
+        <input id="nick" maxlength="18" placeholder="e.g. DJ Disco" autocomplete="off" />
+      </label>
+
+      <div class="field">
+        <span>Pick your dancer</span>
+        <p class="pick-hint">Top row: men · bottom row: women</p>
+        <div id="avatars" class="avatar-grid"></div>
+        <label class="upload">
+          <input id="photo" type="file" accept="image/*" />
+          <span>📷 Put my own face on them</span>
+        </label>
+      </div>
+
+      <div id="join-box" class="actions" hidden>
+        <button id="join-btn" class="btn primary big">Join room <b id="join-code"></b></button>
+        <button id="switch-host" class="link">or host a new game instead</button>
+      </div>
+
+      <div id="host-box" class="actions">
+        <button id="host-btn" class="btn primary big">🎧 Host a game</button>
+        <label class="check"><input id="host-plays" type="checkbox" checked /> I'm playing too</label>
+        <div class="or"><span>or join one</span></div>
+        <div class="code-row">
+          <input id="code" maxlength="5" placeholder="ROOM CODE" autocomplete="off" />
+          <button id="code-btn" class="btn">Join</button>
+        </div>
+      </div>
+      <p id="home-err" class="err" hidden></p>
+
+      <details class="how">
+        <summary>How to play</summary>
+        <ol>
+          <li>The host shares the room link. Everyone picks a name and a man or a woman to play as.</li>
+          <li>When the music plays, everyone dances round the chairs automatically. Watch the pattern!</li>
+          <li>When the music <b>stops</b>, run to a free chair: <kbd>WASD</kbd>/<kbd>arrows</kbd>, or click / tap where you want to go.</li>
+          <li>There's always one chair too few. No chair? <b>Booted</b> for the rest of the level, but you keep your points.</li>
+          <li>Five levels, each harder than the last, and everyone's back in for each one. Thrones, silver chairs and gold/silver tiles pay extra. Most points wins.</li>
+        </ol>
+      </details>
+    </div>
+  </section>
+
+  <!-- LOBBY -->
+  <section id="lobby" class="screen side" hidden>
+    <div class="card lobby-card">
+      <div class="lobby-body">
+      <div class="room-head">
+        <div>
+          <div class="muted small">ROOM CODE</div>
+          <div id="room-code" class="room-code">-----</div>
+        </div>
+        <div id="qr" class="qr"></div>
+      </div>
+      <div class="share">
+        <input id="share-url" readonly />
+        <button id="copy-btn" class="btn small">Copy link</button>
+      </div>
+
+      <div class="preview">
+        <button id="preview-btn" class="btn small">🎧 Play the music</button>
+        <button id="next-track" class="btn small ghost" hidden>🔀 New song</button>
+        <span id="preview-name" class="muted small"></span>
+      </div>
+
+      <h3><span id="count">0</span> players on the floor</h3>
+      <ul id="roster" class="roster"></ul>
+
+      <div id="host-settings">
+        <h3>Pick the vibe</h3>
+        <div id="themes" class="themes"></div>
+        <h3>5 levels, one game</h3>
+        <ol class="level-ladder">
+          <li><b>1 · Chill</b> slow chairs, clear floor</li>
+          <li><b>2 · Easy</b> quicker + 1 obstacle</li>
+          <li><b>3 · Medium</b> faster + 2 obstacles</li>
+          <li><b>4 · Hard</b> fast + 3 obstacles</li>
+          <li><b>5 · Insane</b> chairs fly + 4 obstacles</li>
+        </ol>
+        <p class="muted small">Each level plays until one dancer is left, then <b>everyone is back in</b> for the next one. Points add up across all levels; most points wins. End the game any time with <b>End game</b>.</p>
+        <ul class="bonus-key small">
+          <li>👑 <b>Throne</b> +300 · 🥈 <b>Silver chair</b> +150</li>
+          <li>✨ <b>Gold tile</b> +150 · ◇ <b>Silver tile</b> +75 (grab a chair while it's on one)</li>
+          <li>💎 <b>Jackpot</b>: throne on gold +1000 · throne on silver +600 · silver on gold +450 · silver on silver +300</li>
+        </ul>
+        <h3>Game mode</h3>
+        <div class="seg" id="mode-seg">
+          <button data-v="classic" class="on">Classic<small>one out per round</small></button>
+          <button data-v="turbo">Turbo<small>¼ out per round</small></button>
+        </div>
+        <h3>Chair layout</h3>
+        <div class="seg" id="layout-seg">
+          <button data-v="mix" class="on">Shapes mix<small>ring, rows, star… + random</small></button>
+          <button data-v="random">Random anywhere<small>scattered every round</small></button>
+        </div>
+        <h3>Moving chairs</h3>
+        <div class="seg" id="motion-seg">
+          <button data-v="still">Still<small>easy</small></button>
+          <button data-v="drift">Drift<small>wobble after stop</small></button>
+          <button data-v="wild" class="on">Wild<small>roam everywhere, always</small></button>
+        </div>
+        <h3>Who stops the music?</h3>
+        <div class="seg" id="dj-seg">
+          <button data-v="auto" class="on">Random<small>surprise stop</small></button>
+          <button data-v="manual">Host DJ<small>you hit stop</small></button>
+        </div>
+      </div>
+      <div id="guest-wait" class="wait" hidden>
+        <div class="eq"><i></i><i></i><i></i><i></i><i></i></div>
+        Waiting for the host to drop the beat…
+      </div>
+      </div>
+      <!-- its own footer, so the settings scroll above it and never sit underneath -->
+      <div id="host-start" class="lobby-foot">
+        <div id="lobby-more" class="more-hint" hidden>▾ More settings below, scroll down</div>
+        <button id="start-btn" class="btn primary big">▶ Start the music</button>
+        <p id="lobby-note" class="muted small center"></p>
+      </div>
+    </div>
+  </section>
+
+  <!-- IN-GAME HUD -->
+  <section id="hud" hidden>
+    <div class="topbar">
+      <div class="pill" id="hud-round">Round 1</div>
+      <div class="pill status" id="hud-status">Get ready</div>
+      <div class="pill" id="hud-count">👥 0 · 🪑 0</div>
+      <button class="pill icon" id="mute-btn" title="Mute (M)">🔊</button>
+    </div>
+    <div class="bottombar">
+      <div class="reactions" id="reactions"></div>
+      <div class="host-ctl" id="host-ctl" hidden>
+        <button class="btn danger" id="stop-btn" hidden>⏹ STOP THE MUSIC <kbd>Space</kbd></button>
+        <button class="btn small ghost" id="end-btn">End game</button>
+      </div>
+    </div>
+    <div class="hint" id="hint" hidden></div>
+    <div class="side-roster" id="side-roster"></div>
+    <div class="predict" id="predict" hidden></div>
+    <div class="timer" id="timer" hidden><b id="timer-n"></b><span id="timer-label"></span><i><u id="timer-bar"></u></i></div>
+  </section>
+
+  <div id="banner" class="banner"></div>
+
+  <div id="overlay" class="overlay" hidden>
+    <div class="card overlay-card" id="overlay-card"></div>
+  </div>
+
+  <div id="toast" class="toast" hidden></div>
+
+</body>
+</html>
